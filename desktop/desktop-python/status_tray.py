@@ -457,10 +457,13 @@ def run_widget(args):
                 entry 固定在最前 / 取消置顶
     The right-click menu also resets position + size to the default
     bottom-right dock. With --tray the pill shares one client with a
-    system-tray icon (pystray run_detached; needs pystray + Pillow) whose
-    menu adds 隐藏窗口 / 显示窗口 — hiding the pill while the tray icon
-    keeps the status; the hidden state is persisted too. Default window
-    height is one compact line (WIDGET_COMPACT_H); quit via either menu.
+    system-tray icon (pystray run_detached; needs pystray + Pillow). With
+    --tray both menus offer 隐藏窗口 (the tray one also offers 显示窗口):
+    hiding withdraws the pill while the tray icon keeps the status; the
+    hidden state is persisted too. Without --tray there is no way back from
+    a hidden pill, so 隐藏窗口 is not offered and a saved hidden state is
+    ignored at startup. Default window height is one compact line
+    (WIDGET_COMPACT_H); quit via either menu.
     """
     import tkinter as tk
 
@@ -497,9 +500,13 @@ def run_widget(args):
     _widget_place(root, saved)
     pinned_box = [bool(saved["topmost"]) if saved else True]
     root.attributes("-topmost", pinned_box[0])
-    visible_box = [bool(saved["visible"]) if saved else True]
+    can_hide = bool(getattr(args, "tray", False))
+    if saved and not saved["visible"] and not can_hide:
+        print("[widget] 保存的是隐藏状态,但没有 --tray:没有入口能再显示窗口,"
+              "本次启动按显示处理。")
+    visible_box = [bool(saved["visible"]) if (saved and can_hide) else True]
     if not visible_box[0]:
-        root.withdraw()  # start hidden; a --tray icon (or saved state) restored it
+        root.withdraw()  # start hidden; the --tray icon keeps the status
 
     def paint(st, snap):
         # called from the client thread -> marshal onto the tk thread
@@ -643,12 +650,17 @@ def run_widget(args):
             _stop_tray(tray_icon)
         root.destroy()
 
+    # Entry 0 is the pin toggle (its label is refreshed by _toggle_pin via
+    # entryconfig(0, …)); keep it first. 隐藏窗口 is offered only with
+    # --tray — otherwise there would be no way back.
     menu = tk.Menu(root, tearoff=0)
     menu.add_command(
         label=("取消置顶 / Unpin" if pinned_box[0]
                else "固定在最前 / Pin on top"),
         command=_toggle_pin)
     menu.add_command(label="重置位置与大小 / Reset", command=_reset_position)
+    if can_hide:
+        menu.add_command(label="隐藏窗口 / Hide", command=_toggle_visible)
     menu.add_separator()
     menu.add_command(label="退出 / Quit", command=_quit_all)
 
