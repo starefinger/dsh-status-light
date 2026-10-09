@@ -417,7 +417,13 @@ def _tray_apply_state(ensure_icon, state):
 
 
 def run_tray(args):
-    import pystray
+    try:
+        import pystray  # noqa: F401
+        from PIL import Image  # noqa: F401
+    except Exception as exc:
+        print("[tray] 缺少托盘依赖: %s\n请先执行:  pip install -r requirements.txt"
+              % exc)
+        return 1
 
     client = StatusClient(host=args.host, port=args.port, poll_only=args.poll)
     icon = None
@@ -447,6 +453,7 @@ def run_tray(args):
         pass
     finally:
         client.stop()
+    return 0
 
 
 def run_widget(args):
@@ -746,8 +753,7 @@ def main(argv=None):
     if args.once:
         return cmd_once(args)
     if args.tray_only:
-        run_tray(args)
-        return 0
+        return run_tray(args)
     # default (and explicit --widget): the desktop app — always-on-top
     # pill + tray icon, exactly what --widget --tray used to mean.
     return run_widget(args)
