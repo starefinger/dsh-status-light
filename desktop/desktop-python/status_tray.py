@@ -70,6 +70,7 @@ WIDGET_MIN_H = 30
 WIDGET_MAX_W = 720
 WIDGET_MAX_H = 240
 WIDGET_HANDLE = 16  # bottom-right resize grip, px
+WIDGET_COMPACT_H = 32  # default height: just tall enough for one text line
 WIDGET_STATE_FILE = os.path.join(
     os.path.expanduser("~"), ".dsh_session_status_widget.json")
 
@@ -85,18 +86,19 @@ def _widget_load_state():
             "w": int(d["w"]),
             "h": int(d["h"]),
             "topmost": bool(d.get("topmost", True)),
+            "visible": bool(d.get("visible", True)),
         }
     except Exception:
         return None
 
 
-def _widget_save_state(x, y, w, h, topmost):
+def _widget_save_state(x, y, w, h, topmost, visible=True):
     """Best-effort atomic write; a failure never breaks the pill."""
     try:
         tmp = WIDGET_STATE_FILE + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump({"x": int(x), "y": int(y), "w": int(w), "h": int(h),
-                       "topmost": bool(topmost)}, f)
+                       "topmost": bool(topmost), "visible": bool(visible)}, f)
         os.replace(tmp, WIDGET_STATE_FILE)
     except Exception:
         pass
@@ -104,10 +106,15 @@ def _widget_save_state(x, y, w, h, topmost):
 
 def _widget_default_geometry(root):
     """Fresh-install placement: bottom-right, offset clear of the tray
-    (anchored at 0,0 when the screen is smaller than the pill)."""
+    (anchored at 0,0 when the screen is smaller than the pill).
+
+    The default height is WIDGET_COMPACT_H — just tall enough for the
+    one line of text — instead of the font-dependent reqheight, which
+    leaves visible slack above and below the label on Windows.
+    """
     sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
     pw = root.winfo_reqwidth()
-    ph = root.winfo_reqheight()
+    ph = WIDGET_COMPACT_H
     return pw, ph, max(0, sw - pw - 24), max(0, sh - ph - 40)
 
 
@@ -345,8 +352,14 @@ def status_line(client):
     return line
 
 
-def _tray_build_menu(client, on_quit):
-    """The standard tray menu. `on_quit(icon)` runs for the 退出 item."""
+def _tray_build_menu(client, on_quit, toggle_visible=None, is_visible=None):
+    """The standard tray menu. `on_quit(icon)` runs for the 退出 item.
+
+    When `toggle_visible` (and `is_visible`) are given — i.e. the tray is a
+    companion to a widget window — a 隐藏窗口/显示窗口 entry is inserted
+    before 退出. Its title is a callable, which the backend re-evaluates on
+    every menu open, so it always shows the current direction.
+    """
     import pystray
 
     def _refresh(_icon, _item):
@@ -359,7 +372,7 @@ def _tray_build_menu(client, on_quit):
     def _quit(_icon, _item):
         on_quit(_icon)
 
-    return (
+    items = (
         pystray.MenuItem(
             "status",
             lambda it: status_line(client),
@@ -368,8 +381,17 @@ def _tray_build_menu(client, on_quit):
         ),
         pystray.MenuItem("刷新 / Refresh", _refresh),
         _separator(),
-        pystray.MenuItem("退出 / Quit", _quit),
     )
+    if toggle_visible is not None:
+        def _vis_label(_it):
+            return "显示窗口 / Show" if not is_visible() else "隐藏窗口 / Hide"
+
+        def _vis_toggle(_icon, _item):
+            toggle_visible()
+
+        items = items + (pystray.MenuItem(_vis_label, _vis_toggle),)
+    items = items + (pystray.MenuItem("退出 / Quit", _quit),)
+    return items
 
 
 def _tray_apply_state(ensure_icon, state):
@@ -435,9 +457,10 @@ def run_widget(args):
                 entry 固定在最前 / 取消置顶
     The right-click menu also resets position + size to the default
     bottom-right dock. With --tray the pill shares one client with a
-    system-tray icon (pystray run_detached; needs pystray + Pillow).
-    The pill is intentionally persistent (no hide mode) so the status is
-    always visible; quit via the menu to remove it.
+    system-tray icon (pystray run_detached; needs pystray + Pillow) whose
+    menu adds 隐藏窗口 / 显示窗口 — hiding the pill while the tray icon
+    keeps the status; the hidden state is persisted too. Default window
+    height is one compact line (WIDGET_COMPACT_H); quit via either menu.
     """
     import tkinter as tk
 
@@ -474,6 +497,9 @@ def run_widget(args):
     _widget_place(root, saved)
     pinned_box = [bool(saved["topmost"]) if saved else True]
     root.attributes("-topmost", pinned_box[0])
+    visible_box = [bool(saved["visible"]) if saved else True]
+    if not visible_box[0]:
+        root.withdraw()  # start hidden; a --tray icon (or saved state) restored it
 
     def paint(st, snap):
         # called from the client thread -> marshal onto the tk thread
@@ -488,6 +514,25 @@ def run_widget(args):
             root.after(0, _apply)
         except Exception:
             pass
+
+    def _persist():
+        _widget_save_state(root.winfo_x(), root.winfo_y(),
+                           root.winfo_width(), root.winfo_height(),
+                           pinned_box[0], visible_box[0])
+
+    # --- show / hide the pill (tray menu + persisted) ---
+    def _set_visible(v):
+        if v:
+            root.deiconify()
+            if pinned_box[0]:
+                root.attributes("-topmost", True)
+        else:
+            root.withdraw()
+        visible_box[0] = v
+
+    def _toggle_visible():
+        _set_visible(not visible_box[0])
+        _persist()
 
     # Optional companion tray icon (pystray): runs via run_detached so its
     # message loop lives in its own thread while tkinter owns the main
@@ -508,7 +553,9 @@ def run_widget(args):
                 "dsh-session-status",
                 _load_icon(UNKNOWN),
                 TITLE[UNKNOWN],
-                _tray_build_menu(client, _tray_quit),
+                _tray_build_menu(client, _tray_quit,
+                                 toggle_visible=_toggle_visible,
+                                 is_visible=lambda: visible_box[0]),
             )
             tray_icon.run_detached()
             _tray_apply_state(lambda: tray_icon, client.state)
@@ -529,11 +576,6 @@ def run_widget(args):
     else:
         client.on_state = paint
     client.start()
-
-    def _persist():
-        _widget_save_state(root.winfo_x(), root.winfo_y(),
-                           root.winfo_width(), root.winfo_height(),
-                           pinned_box[0])
 
     def _reset_position(_e=None):
         w, h, x, y = _widget_default_geometry(root)

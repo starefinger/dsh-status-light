@@ -68,7 +68,12 @@ bottom-right corner; everything else is user-adjustable:
 **药丸 + 托盘图标同时显示**:`python status_tray.py --widget --tray`
 (需要 pystray + Pillow)。同一个 SSE 客户端同时喂两个视图,状态、
 刷新、退出都联动——药丸右键退出会一并停掉托盘,托盘右键退出会
-关闭药丸。
+关闭药丸。托盘菜单里多了**`隐藏窗口 / 显示窗口`**:隐藏后药丸消失
+(托盘图标继续显示状态,菜单文案随之变回"显示窗口"),显示状态
+同样持久化,重启后保持。
+
+**默认高度**为一行紧凑文字(`WIDGET_COMPACT_H` = 32px,宽度按文字
+自适应);需要更大就拖右下角手柄。
 
 位置、大小和置顶状态**自动记忆**到
 `~/.dsh_session_status_widget.json`,重启后原样恢复;若保存的位置已不在
