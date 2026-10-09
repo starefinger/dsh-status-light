@@ -1,5 +1,5 @@
-// Simulation test for dsh-session-status v0.3.0 (sidebar dot + two-mode tab
-// favicon + Settings → General "tab-icon" row backed by the session-status
+// Simulation test for dsh-session-status v0.4.0 (sidebar dot + two-mode tab
+// favicon + dedicated Settings → 状态监控 section backed by the session-status
 // settings namespace). Runs the REAL lib/client.js bundle in a VM with a fake
 // document/window/react/stores plus a fake settingsScope + locale + remote.
 "use strict";
@@ -96,6 +96,10 @@ const fakeSettingsScope = {
 const registeredDictionaries = {};
 const fakeLocale = {
   register(ns, dict) { registeredDictionaries[ns] = dict; return () => { delete registeredDictionaries[ns]; }; },
+  bind(ns) {
+    return (key) =>
+      (registeredDictionaries[ns] && registeredDictionaries[ns].zh && registeredDictionaries[ns].zh[key]) || key;
+  },
 };
 
 let effectCleanups = [];
@@ -123,37 +127,60 @@ exported.apply(fakeCtx);
 // Resolve the two registered slots.
 const sidebarComp = fakeCtx._injections["sidebar.footer.action"]();
 const sidebarReg = fakeCtx._registers["sidebar.footer.action"];
-const rowComp = fakeCtx._injections["settings.general.item"]();
-const rowReg = fakeCtx._registers["settings.general.item"];
+const sectionComp = fakeCtx._injections["settings.section"]();
+const sectionReg = fakeCtx._registers["settings.section"];
+assert.strictEqual(fakeCtx._injections["settings.general.item"], undefined, "no leftover general.item registration");
 
 assert.strictEqual(typeof sidebarComp, "function", "sidebar slot resolves to a component");
-assert.strictEqual(typeof rowComp, "function", "settings row slot resolves to a component");
+assert.strictEqual(typeof sectionComp, "function", "settings section slot resolves to a component");
 assert.strictEqual(sidebarReg.options.id, "session-status");
-assert.strictEqual(rowReg.options.id, "session-status");
-assert.strictEqual(rowReg.options.order, 20);
-assert.ok(rowReg.options.locale, "row declares a locale namespace");
+assert.strictEqual(sectionReg.options.id, "session-status", "section has the plugin id");
+assert.strictEqual(sectionReg.options.order, 20, "section ordered after plugins (15)");
+assert.strictEqual(sectionReg.options.locale, "session-status.section", "section declares a locale namespace");
+assert.strictEqual(typeof sectionReg.options.label, "function", "section provides a nav-label thunk");
+assert.strictEqual(sectionReg.options.label(), "状态监控", "nav label resolves to 状态监控 (zh)");
 
 // ── helpers ───────────────────────────────────────────────────────────────
 const dot = (out) => out.props.children.props["data-state"];
 const state = (out) => out.props["data-dss-state"];
 const sidebarProps = () => ({ useSessions: (s) => s(listStore.value), useSessionPendingInteraction: (s) => s(pendingStore.value) });
 function decodedSvg(href) { return decodeURIComponent(href.slice("data:image/svg+xml,".length)); }
-const t = (key) => registeredDictionaries[rowReg.options.locale].zh[key];
-function rowProps() {
-  // The framework hands the row its bound `t` plus the inject face's output.
-  return Object.assign({ t }, rowReg.options.inject());
+const t = (key) => registeredDictionaries[sectionReg.options.locale].zh[key];
+function sectionProps() {
+  // The framework hands the section its bound `t` plus the inject face's output.
+  return Object.assign({ t }, sectionReg.options.inject());
+}
+// Render function components (the stub react only createElement's them).
+function render(node) {
+  if (!node || typeof node !== "object") return node;
+  if (typeof node.type === "function") return render(node.type(node.props));
+  return node;
 }
 function buttonOf(out, id) {
-  // Walk the created element tree for the button whose aria-pressed/key matches.
+  // Walk the created element tree (expanding function components) for the
+  // button whose key matches.
   const found = [];
   (function walk(node) {
     if (!node || typeof node !== "object") return;
+    if (typeof node.type === "function") { walk(render(node)); return; }
     if (node.type === "button") found.push(node);
     const kids = node.props && node.props.children;
     if (Array.isArray(kids)) kids.forEach(walk);
     else if (kids) walk(kids);
   })(out);
   return found.find((b) => b.props["key"] === id);
+}
+function classNameOf(out, cls) {
+  const found = [];
+  (function walk(node) {
+    if (!node || typeof node !== "object") return;
+    if (typeof node.type === "function") { walk(render(node)); return; }
+    if (node.props && node.props.className === cls) found.push(node);
+    const kids = node.props && node.props.children;
+    if (Array.isArray(kids)) kids.forEach(walk);
+    else if (kids) walk(kids);
+  })(out);
+  return found;
 }
 
 // ── 1. initial prime: idle + replace → plain green dot favicon ───────────
@@ -196,12 +223,15 @@ listStore.set({ ids: ["s1"], byId: { s1: { running: false } } }); // still idle
 assert.strictEqual(writes, 0, "no favicon rewrite when state is unchanged");
 assert.strictEqual(iconLink._href, hrefBefore);
 
-// ── 6. settings row renders with the bound scope; replace is preselected ──
-assert.ok(rowReg.options.inject().tabIconScope === fakeScope, "row inject face carries the bound scope");
+// ── 6. settings section renders with the bound scope; replace preselected ──
+assert.ok(sectionReg.options.inject().tabIconScope === fakeScope, "section inject face carries the bound scope");
 assert.strictEqual(fakeSettingsScope.bound.namespace, "session-status", "scope bound to the session-status namespace");
-let rowOut = rowComp(rowProps());
-const replaceBtn = buttonOf(rowOut, "replace");
-const combinedBtn = buttonOf(rowOut, "combined");
+let sectionOut = sectionComp(sectionProps());
+assert.strictEqual(sectionOut.props.className, "dss_section", "section content column wrapper");
+assert.ok(classNameOf(sectionOut, "dss_headTitle").length === 1, "section header title present");
+assert.strictEqual(classNameOf(sectionOut, "dss_headTitle")[0].props.children, "状态监控", "header shows 状态监控");
+const replaceBtn = buttonOf(sectionOut, "replace");
+const combinedBtn = buttonOf(sectionOut, "combined");
 assert.ok(replaceBtn, "row renders a replace option");
 assert.ok(combinedBtn, "row renders a combined option");
 assert.strictEqual(replaceBtn.props["aria-pressed"], true, "replace preselected in replace mode");
@@ -217,10 +247,10 @@ assert.ok(svg.includes("<path"), "combined mode embeds the original logo path");
 assert.ok(svg.includes("dssl"), "combined mode marks the logo for light/dark fill");
 assert.ok(svg.includes('fill="#fff"'), "combined mode adds a white ring behind the dot");
 assert.ok(svg.includes("fill=\"#22c55e\""), "combined mode dot keeps the state color (idle/green)");
-// The row re-renders with combined now selected (scope snapshot advanced).
-rowOut = rowComp(rowProps());
-assert.strictEqual(buttonOf(rowOut, "combined").props["aria-pressed"], true, "combined selected after click");
-assert.strictEqual(buttonOf(rowOut, "replace").props["aria-pressed"], false, "replace deselected after click");
+// The section re-renders with combined now selected (scope snapshot advanced).
+sectionOut = sectionComp(sectionProps());
+assert.strictEqual(buttonOf(sectionOut, "combined").props["aria-pressed"], true, "combined selected after click");
+assert.strictEqual(buttonOf(sectionOut, "replace").props["aria-pressed"], false, "replace deselected after click");
 assert.strictEqual(fakeScope.getSnapshot().value.iconMode, "combined", "write persisted to the scope document");
 
 // ── 8. state change while in combined mode recolors the overlaid dot ──────
@@ -230,8 +260,8 @@ assert.ok(svg.includes("<path"), "logo still present in combined mode");
 assert.ok(svg.includes("fill=\"#f59e0b\""), "combined dot recolors to running/yellow");
 
 // ── 9. click back to "replace" → plain dot favicon restored ───────────────
-rowOut = rowComp(rowProps());
-buttonOf(rowOut, "replace").props.onClick();
+sectionOut = sectionComp(sectionProps());
+buttonOf(sectionOut, "replace").props.onClick();
 svg = decodedSvg(iconLink.href);
 assert.ok(!svg.includes("<path"), "replace mode drops the logo path");
 assert.ok(svg.includes("fill=\"#f59e0b\""), "replace mode keeps the running/yellow color");
@@ -260,8 +290,8 @@ const scopelessCtx = {
 exported.apply(scopelessCtx);
 // Owner resolves each declared slot by invoking its thunk (which registers).
 if (scopelessCtx._injections["sidebar.footer.action"]) scopelessCtx._injections["sidebar.footer.action"]();
-if (scopelessCtx._injections["settings.general.item"]) scopelessCtx._injections["settings.general.item"]();
-assert.strictEqual(scopelessCtx._registers["settings.general.item"], undefined, "no settings row registered when the settings base is absent");
+if (scopelessCtx._injections["settings.section"]) scopelessCtx._injections["settings.section"]();
+assert.strictEqual(scopelessCtx._registers["settings.section"], undefined, "no settings section registered when the settings base is absent");
 // The core indicator (sidebar dot + favicon) is still registered and functional.
 assert.ok(scopelessCtx._registers["sidebar.footer.action"], "sidebar dot still registered without settings base");
 const scopelessSidebar = scopelessCtx._injections["sidebar.footer.action"]();
@@ -275,10 +305,10 @@ console.log("PASS 2/11 list change → yellow plain dot (replace), title untouch
 console.log("PASS 3/11 pending change → red plain dot (overrides running)");
 console.log("PASS 4/11 back to idle → green plain dot restored");
 console.log("PASS 5/11 no-op state changes do not re-write favicon");
-console.log("PASS 6/11 settings row renders; replace preselected; scope bound to session-status");
+console.log("PASS 6/11 settings section (状态监控) renders; header + row; replace preselected");
 console.log("PASS 7/11 click combined → persisted write → composite favicon (logo + state dot)");
 console.log("PASS 8/11 state change in combined mode recolors the overlaid dot");
 console.log("PASS 9/11 click replace → plain-dot favicon restored, mode persisted");
 console.log("PASS 10/11 dispose restores favicon and removes all subscriptions (incl. scope)");
-console.log("PASS 11/11 absent settings base: no row, but dot + favicon still work");
-console.log("ALL TAB-STATUS CHECKS PASSED (v0.3.0)");
+console.log("PASS 11/11 absent settings base: no section, but dot + favicon still work");
+console.log("ALL TAB-STATUS CHECKS PASSED (v0.4.0)");

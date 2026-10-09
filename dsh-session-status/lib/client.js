@@ -23,6 +23,10 @@ window.__ModuleLoader__.load({
       ".dss_title{color:var(--dsw-alias-label-primary);font-size:14px;font-weight:400;line-height:22px}",
       ".dss_desc{color:var(--dsw-alias-label-tertiary);font-size:12px;font-weight:400;line-height:18px}",
       ".dss_opts{align-items:center;gap:8px;display:inline-flex;flex:none}",
+      ".dss_section{flex-direction:column;width:100%;display:flex}",
+      ".dss_head{flex-direction:column;gap:2px;margin-bottom:6px;display:flex}",
+      ".dss_headTitle{color:var(--dsw-alias-label-primary);font-size:16px;font-weight:500;line-height:24px}",
+      ".dss_headIntro{color:var(--dsw-alias-label-tertiary);font-size:14px;font-weight:400;line-height:22px}",
       ".dss_opt{box-sizing:border-box;background:0 0;border:.5px solid var(--dsw-alias-border-l4);color:var(--dsw-alias-label-primary);cursor:pointer;font:inherit;font-size:13px;line-height:20px;border-radius:20px;align-items:center;gap:8px;padding:8px 14px;display:inline-flex;transition:background-color .15s ease-out,border-color .15s ease-out}",
       ".dss_opt:hover:not(.dss_optOn){background:var(--dsw-alias-interactive-bg-hover)}",
       ".dss_optOn{background:var(--dsw-alias-bg-module-platform);border-color:var(--dsw-static-neutral-bluish-400,#93c5fd)}",
@@ -139,14 +143,16 @@ window.__ModuleLoader__.load({
       });
     }
 
-    // ── Settings → General: tab-icon mode row ──────────────────────────────
-    // Registered into `settings.general.item` (the same seat as the shipped
-    // Appearance / font-size rows). The value lives in the `session-status`
-    // settings namespace (persisted by the host settings service); the row
-    // reads the bound scope with useSyncExternalStore so the selection follows
-    // the persisted document, never the click echo.
+    // ── Settings → 状态监控: dedicated section (nav rail entry) ────────────
+    // Registered into `settings.section` — the same seat the shipped Models /
+    // Plugins pages use — so the shell's nav rail picks the page up with zero
+    // shell changes (a section id without a dedicated glyph falls back to the
+    // gear icon). The value lives in the `session-status` settings namespace
+    // (persisted by the host settings service); the row reads the bound scope
+    // with useSyncExternalStore so the selection follows the persisted
+    // document, never the click echo.
     var SETTINGS_NS = "session-status";
-    var SETTINGS_ROW_NS = "session-status.tabIcon";
+    var SETTINGS_SECTION_NS = "session-status.section";
     var MODES = ["replace", "combined"];
     function modeValue(scope) {
       if (!scope) return "replace";
@@ -200,13 +206,28 @@ window.__ModuleLoader__.load({
       }
       return react.createElement("div", { "className": "dss_row" },
         react.createElement("div", { "className": "dss_rowText" },
-          react.createElement("div", { "className": "dss_title" }, t("title")),
-          react.createElement("div", { "className": "dss_desc" }, t("description"))
+          react.createElement("div", { "className": "dss_title" }, t("label"))
         ),
         react.createElement("div", { "className": "dss_opts" },
           opt("replace", t("replace"), t("replaceHint")),
           opt("combined", t("combined"), t("combinedHint"))
         )
+      );
+    }
+
+    // The 状态监控 section content column: a header (page title + intro) plus
+    // the tab-icon mode row. Mirrors the shipped General/Models sections — a
+    // plain column div; the single row is rendered directly (no nested child
+    // slot needed for one row).
+    function StatusSection(props) {
+      var t = props.t;
+      var scope = props.tabIconScope;
+      return react.createElement("div", { "className": "dss_section" },
+        react.createElement("div", { "className": "dss_head" },
+          react.createElement("div", { "className": "dss_headTitle" }, t("sectionTitle")),
+          react.createElement("div", { "className": "dss_headIntro" }, t("sectionIntro"))
+        ),
+        react.createElement(TabIconRow, { t: t, tabIconScope: scope })
       );
     }
 
@@ -279,42 +300,52 @@ window.__ModuleLoader__.load({
           tab.dispose();
         };
       }, "dsh-session-status: browser tab status");
-      // Settings → General row: dictionaries + slot entry. Registered only when
-      // the settings scope is bound (the settings base is mounted); the entry's
-      // `locale` seat hands the row a bound `t`, matching the shipped rows.
+      // Settings → 状态监控: dictionaries + the section entry. Registered only
+      // when the settings scope is bound (the settings base is mounted); the
+      // section's `locale` seat hands StatusSection a bound `t`, and its
+      // `label` thunk feeds the nav rail (resolved via resolveSlotLabel).
       if (scope && locale && locale.register) {
+        // One dictionary namespace feeds BOTH the nav label and the section
+        // body (the section entry's `locale` seat hands the component a bound
+        // `t`; the row reads the same keys), matching the shipped sections.
         ctx.effect(function () {
-          return locale.register(SETTINGS_ROW_NS, {
+          return locale.register(SETTINGS_SECTION_NS, {
             zh: {
-              "title": "标签页图标",
-              "description": "浏览器标签页 favicon 的显示方式（红＝需人工处理，黄＝运行中，绿＝空闲）",
+              "nav": "状态监控",
+              "sectionTitle": "状态监控",
+              "sectionIntro": "红/黄/绿全局状态在浏览器标签页 favicon 上的显示方式（红＝需人工处理，黄＝运行中，绿＝空闲）",
+              "label": "标签页图标",
               "replace": "代替原图标",
               "combined": "与原图标共存",
               "replaceHint": "仅显示状态圆点，隐藏原图标",
               "combinedHint": "保留原图标，右下角叠加状态圆点"
             },
             en: {
-              "title": "Tab favicon",
-              "description": "How the browser tab favicon shows the global state (red = human input needed, yellow = running, green = idle)",
+              "nav": "Status monitoring",
+              "sectionTitle": "Status monitoring",
+              "sectionIntro": "How the global red/yellow/green state shows in the browser tab favicon (red = human input needed, yellow = running, green = idle)",
+              "label": "Tab favicon",
               "replace": "Replace the original icon",
               "combined": "Keep the original icon",
               "replaceHint": "Show the status dot only and hide the original icon",
               "combinedHint": "Keep the original icon with the status dot overlaid"
             }
           });
-        }, "dsh-session-status: settings row dictionaries");
-        ctx.slots.inject("settings.general.item", function () {
+        }, "dsh-session-status: settings section dictionaries");
+        var tNav = locale.bind ? locale.bind(SETTINGS_SECTION_NS) : function (k) { return k; };
+        ctx.slots.inject("settings.section", function () {
           return ctx.slots.register(
             {
-              name: "settings.general.item",
+              name: "settings.section",
               id: "session-status",
               order: 20,
-              locale: SETTINGS_ROW_NS,
+              label: function () { return tNav("nav"); },
+              locale: SETTINGS_SECTION_NS,
               inject: function () {
                 return { tabIconScope: scope };
               }
             },
-            TabIconRow
+            StatusSection
           );
         });
       }

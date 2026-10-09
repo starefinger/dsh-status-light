@@ -46,9 +46,10 @@ genuinely *colored* part of the tab, and it shows in the OS taskbar/dock too.
 > favicon — two status icons side by side. Since v0.2.1 the **title is left
 > untouched** and the favicon alone carries the state.
 
-## Tab-icon mode (v0.3.0, configurable in Settings)
+## Tab-icon mode (configurable in Settings; its own page since v0.4.0)
 
-A new **"Tab favicon"** row appears under **Settings → General**, offering two
+A dedicated **Settings → Status** page (a full section in the settings nav rail —
+it lived under *General* in v0.3.0) holds a **"Tab favicon"** row offering two
 modes:
 
 | Mode | Effect | Notes |
@@ -71,12 +72,20 @@ modes:
 - **Graceful degradation**: if the settings base layer is absent (or the host half
   has not taken effect across a restart yet, so the scope is not ready), the
   sidebar dot and favicon keep working (defaulting to the *replace* mode) and the
-  settings row is simply not rendered / its buttons are disabled — the core
+  settings page is simply not registered / its buttons are disabled — the core
   indicator never breaks because the settings surface is missing.
 
-Implementation note: it subscribes to the **same** two standard stores the
-sidebar dot reads (no React, no polling), so the two never disagree; the
-`ctx.effect` disposer unsubscribes and **restores the original favicon** on
+**Dedicated settings page** (v0.4.0): the plugin registers into `settings.section`
+— the same seat the shipped General / Models / Plugins pages use — so the nav rail
+shows a **Status monitoring** entry with **zero shell changes** (an unknown
+section id falls back to the gear glyph). The page content is a header (title +
+intro) plus the tab-icon row; the browser half reaches `locale` /
+`settingsScope` through `ctx.get` (soft access), so a composition without them
+simply has no page.
+
+Implementation note: the favicon logic subscribes to the **same** two standard
+stores the sidebar dot reads (no React, no polling), so the two never disagree;
+the `ctx.effect` disposer unsubscribes and **restores the original favicon** on
 plugin disposal / HMR swap; each browser tab updates its own favicon
 independently.
 
