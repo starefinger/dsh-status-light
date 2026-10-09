@@ -240,34 +240,49 @@ function startBridge(ctx, agents, webServer) {
 
 /**
  * Host registration.
+ *
+ * The bridge is a nested plugin that injects the `agents` + `webServer`
+ * services: Cordis activates a plugin only when its injected services are
+ * all present, so this fiber runs exactly in the web composition and is
+ * simply skipped elsewhere. (A plain `ctx.get("agents")` returns `undefined`
+ * for an undeclared service — the v0.5.0 bug that kept the route from ever
+ * mounting.)
+ *
+ * The `session-status` settings namespace is registered INSIDE the bridge
+ * fiber, so it has exactly one owner: the settings service fails loud on a
+ * duplicate registration, and the namespace is only meaningful where the
+ * browser consumer (状态监控 section) exists — i.e. the same web
+ * composition. A composition with the services but no settings provider
+ * still gets the bridge, running at its default (enabled) toggle.
  * @param ctx - Host context for the session-status plugin.
  */
 export function apply(ctx) {
-  const agents = ctx.get("agents");
-  const webServer = ctx.get("webServer");
-
-  // (1) The bridge itself — web compositions only, independent of the
-  // settings provider so a minimal profile still gets the endpoint.
-  const bridgeApi =
-    agents !== undefined && webServer !== undefined
-      ? startBridge(ctx, agents, webServer)
-      : null;
-
-  // (2) Settings namespace (the browser binds the same namespace for the
-  // tab-icon mode; `bridge.enabled` is consumed host-side, hot-reloaded).
-  // When a settings provider is present, apply the persisted toggle on top
-  // of the bridge's default-on start and watch it for hot changes.
-  ctx.inject(["settings"], (settingsCtx) => {
-    const scope = settingsCtx.settings.register(NS, StatusSchema);
-    if (bridgeApi === null) return;
-    const applyEnabled = () => {
-      const value = scope.get();
-      bridgeApi.setEnabled(Boolean(value.bridgeEnabled));
-    };
-    applyEnabled();
-    scope.watch(applyEnabled);
+  ctx.inject(["agents", "webServer"], (bridgeCtx) => {
+    const bridgeApi = startBridge(
+      bridgeCtx,
+      bridgeCtx.agents,
+      bridgeCtx.webServer
+    );
+    // Settings namespace (the browser binds the same namespace for the
+    // tab-icon mode; `bridgeEnabled` is consumed host-side, hot-reloaded).
+    bridgeCtx.inject(["settings"], (settingsCtx) => {
+      const scope = settingsCtx.settings.register(NS, StatusSchema);
+      const applyEnabled = () => {
+        const value = scope.get();
+        bridgeApi.setEnabled(Boolean(value.bridgeEnabled));
+      };
+      applyEnabled();
+      scope.watch(applyEnabled);
+    });
   });
 }
+
+/**
+ * Service declaration (informational, matching the shipped plugins' shape —
+ * dsh-goal-round-driver / dsh-client-hmr export the same way). The runtime
+ * wiring is the `ctx.inject(["agents", "webServer"], …)` call inside `apply`.
+ */
+export const inject = ["agents", "webServer"];
 
 export {
   DEFAULT_BRIDGE_ENABLED,

@@ -1,7 +1,7 @@
 {
   "name": "dsh-session-status",
   "description": "DSH Web GUI plugin: a global red/yellow/green status dot (sidebar footer + text label) plus a colored browser-tab favicon (title untouched). Red = a session is blocked waiting for human input (approval / question / plan-review); yellow = an agent is running; green = nothing running and nothing blocked. The tab-icon mode (replace the original favicon vs. keep it with the status dot overlaid) and the desktop status bridge are configured from the dedicated Settings → 状态监控 section and persist in the `session-status` settings namespace. The bridge (v0.5.0) mounts read-only GET /session-status and /session-status/stream endpoints on the running web server (no new port) so a desktop tray tool (repo-level desktop/ folder) can mirror the same state.",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "license": "MIT",
   "type": "module",
   "main": "lib/index.js",

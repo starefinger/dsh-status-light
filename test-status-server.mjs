@@ -417,15 +417,26 @@ function makeFakeCtx({ withAgents = true, withWebServer = true, withSettings = t
       };
       return next(0);
     },
+    // Cordis semantics: an injected plugin ACTIVATES only when every
+    // injected service is present; the callback's context then carries the
+    // services as properties. Missing any one => the thunk never runs.
     inject: (names, cb) => {
+      const resolved = Object.create(null);
       for (const n of names) {
         if (n === "settings") {
           if (settings === undefined) return;
-          return cb({ settings });
+          resolved[n] = settings;
+          continue;
         }
-        if (ctx.get(n) === undefined) return;
+        const svc = ctx.get(n);
+        if (svc === undefined) return;
+        resolved[n] = svc;
       }
-      return cb(ctx);
+      const child = Object.create(ctx);
+      for (const [k, v] of Object.entries(resolved)) {
+        Object.defineProperty(child, k, { value: v, enumerable: false });
+      }
+      return cb(child);
     },
     effect: (fn, label) => {
       const cleanup = fn();
@@ -638,14 +649,36 @@ async function sectionC() {
     ctx.dispose();
   });
 
-  await check("non-web composition (no agents/webServer): settings only, no bridge", () => {
+  await check("non-web composition (no agents/webServer): bridge thunk never runs", () => {
     const { ctx, webServerRoutes, settings } = makeFakeCtx({
       withAgents: false,
       withWebServer: false,
     });
     apply(ctx);
-    assert.ok(settings.registered[SETTINGS_NAMESPACE], "namespace still registered");
     assert.equal(webServerRoutes.length, 0, "no route without webServer");
+    assert.ok(
+      !webServerRoutes.some((r) => r.path === "/session-status"),
+      "bridge thunk never ran (service gate)"
+    );
+    assert.equal(
+      settings.registered[SETTINGS_NAMESPACE],
+      undefined,
+      "namespace is owned by the bridge fiber; absent where the bridge is"
+    );
+    ctx.dispose();
+  });
+
+  await check("web services without settings provider: bridge still mounts", () => {
+    const { ctx, webServerRoutes, settings } = makeFakeCtx({
+      withAgents: true,
+      withWebServer: true,
+      withSettings: false,
+    });
+    apply(ctx);
+    assert.ok(
+      webServerRoutes.some((r) => r.path === "/session-status"),
+      "bridge mounts without the settings provider"
+    );
     ctx.dispose();
   });
 }
