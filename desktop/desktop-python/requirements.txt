@@ -3,5 +3,5 @@
 # The fetch/parse core (status_tray.py, --once mode) uses only the Python
 # standard library, so you can smoke-test the bridge without installing
 # either. The tray itself needs:
-pystray>=0.19.5
+pystray>=0.18.0
 Pillow>=10.0.0

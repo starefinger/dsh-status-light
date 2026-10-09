@@ -251,7 +251,6 @@ def run_tray(args):
     client = StatusClient(host=args.host, port=args.port, poll_only=args.poll)
 
     icon = None
-    images = {}
 
     def ensure_icon():
         nonlocal icon
@@ -263,6 +262,13 @@ def run_tray(args):
                 build_menu(client),
             )
         return icon
+
+    def _separator():
+        # No pystray release exposes a top-level Separator() — the documented
+        # separator is the shared pystray.Menu.SEPARATOR sentinel (a disabled
+        # "- - - -" item) in both 0.18 and 0.19. Fall back to it defensively
+        # if a future build relocates it.
+        return getattr(pystray.Menu, "SEPARATOR", pystray.MenuItem("- - - -", None))
 
     def build_menu(client):
         def _refresh(_icon, _item):
@@ -284,7 +290,7 @@ def run_tray(args):
                 enabled=False,
             ),
             pystray.MenuItem("刷新 / Refresh", _refresh),
-            pystray.Separator(),
+            _separator(),
             pystray.MenuItem("退出 / Quit", _quit),
         )
 
@@ -304,13 +310,16 @@ def run_tray(args):
         return line
 
     def on_state(state, snapshot):
-        # Called from the client thread; pystray's update_* post to its own
-        # UI thread, so this is safe to invoke off-main.
+        # Called from the client thread. Recolor + retitlize through the
+        # property setters (stable across pystray 0.18/0.19 — the old
+        # update_title()/update_menu(menu) call-form was removed). The menu
+        # itself needs no re-push: its status line is a dynamic callable that
+        # pystray re-evaluates on `Icon.__call__` -> update_menu() each time
+        # the menu is opened.
         try:
             ic = ensure_icon()
             ic.icon = _load_icon(state)
-            ic.update_title(TITLE[state])
-            ic.update_menu(build_menu(client))
+            ic.title = TITLE[state]
         except Exception:
             pass
 
