@@ -117,6 +117,15 @@ GET /session-status/stream  → SSE：每次状态变化推一帧 + 15 秒保活
 有上限（默认 8，超出 503）。桥是**软依赖**：非 web 组合（无 `agents` /
 `webServer`）根本不会启动它。
 
+**挂载机制（v0.5.1）**：桥以嵌套插件形式运行，其 `inject` 声明
+`agents` + `webServer`，因此 Cordis 只会在同时提供这两个服务的组合里
+激活它，其余组合静默跳过。这一点很关键：普通的 `ctx.get("agents")`
+对插件**未声明**的服务返回 `undefined`（Cordis 的解析模型：属性读取
+要求声明，未声明的查找解析为空）。v0.5.0 的代码正是这么读两个服务的，
+守卫因此提前返回，路由在任何一次启动中都没挂上——已用嵌套插件接线
+修复。`session-status` 设置命名空间注册在同一个 fiber 内（单一属主；
+settings 服务拒绝重复注册）。
+
 **开关**：在 **Settings → 状态监控 → 桌面状态桥** 切换（持久化为
 `bridgeEnabled`，由 settings watcher 热加载），端点即时出现/消失；宿主半仍
 只在 `dsh web` 启动时加载一次，因此新装需要重启一次。
