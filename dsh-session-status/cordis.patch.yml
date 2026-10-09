@@ -1,8 +1,9 @@
 # Baseline layer contributed by the dsh-session-status bundle.
 #
-# Adds one host Loader row. The row has no host config: the package's
-# `dsh.client` declaration is what makes the client-modules scanner publish
-# its browser half under /plugins and boot it in the GUI.
+# Adds one host Loader row. The host half registers the `session-status`
+# settings namespace (the tab-icon mode preference persisted in settings.yaml).
+# The package's `dsh.client` declaration is what makes the client-modules
+# scanner publish its browser half under /plugins and boot it in the GUI.
 - insert:
     - id: session-status
       name: dsh-session-status

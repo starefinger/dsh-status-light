@@ -1,5 +1,7 @@
-// Simulation test for dsh-session-status v0.2.0 (sidebar dot + tab title/favicon).
-// Runs the real lib/client.js bundle in a VM with fake document/window/react/stores.
+// Simulation test for dsh-session-status v0.3.0 (sidebar dot + two-mode tab
+// favicon + Settings → General "tab-icon" row backed by the session-status
+// settings namespace). Runs the REAL lib/client.js bundle in a VM with a fake
+// document/window/react/stores plus a fake settingsScope + locale + remote.
 "use strict";
 const fs = require("fs");
 const path = require("path");
@@ -41,8 +43,19 @@ const entry = windowObj.__ModuleLoader__.entries[0];
 assert.strictEqual(entry.id, "dsh-session-status");
 
 // ── materialize with stub react ──────────────────────────────────────────
-function h(type, props) { props.children = props.children; return { type, props }; }
-const stubReact = { createElement: h };
+function h(type, props, ...children) {
+  if (props === null || props === undefined) props = {};
+  if (children.length === 1) props.children = children[0];
+  else if (children.length > 1) props.children = children;
+  return { type, props };
+}
+// useSyncExternalStore stub: read the current snapshot without subscribing
+// (the row is re-rendered by re-invoking the component; the favicon follows
+// the effect's REAL scope subscription, not this stub).
+const stubReact = {
+  createElement: h,
+  useSyncExternalStore: (sub, getSnap) => getSnap(),
+};
 const exported = entry.factory((name) => (name === "react" ? stubReact : (() => { throw new Error("unexpected require " + name); })));
 assert.strictEqual(JSON.stringify(exported.inject), JSON.stringify(["slots", "sessions", "uiSession"]));
 
@@ -60,56 +73,119 @@ function makeStore(initial) {
 }
 const listStore = makeStore({ ids: ["s1", "s2"], byId: { s1: { running: false }, s2: { running: false } } });
 const pendingStore = makeStore(new Map());
+
+// ── fake settingsScope (bound controller) ─────────────────────────────────
+// Mirrors the real SettingsScopeController face the bundle uses:
+// getSnapshot() -> { status, value, writable, revision }, subscribe(l), set(field, value).
+function makeFakeScope(initialMode) {
+  const listeners = new Set();
+  let value = { iconMode: initialMode };
+  let revision = 0;
+  return {
+    _listeners: listeners,
+    getSnapshot: () => ({ status: "ready", value: { ...value }, writable: true, revision }),
+    subscribe(l) { listeners.add(l); return () => listeners.delete(l); },
+    set(field, v) { value = { ...value, [field]: v }; revision += 1; for (const l of [...listeners]) l(); },
+  };
+}
+const fakeScope = makeFakeScope("replace");
+const fakeSettingsScope = {
+  bound: null,
+  bind(spec) { this.bound = spec; return fakeScope; },
+};
+const registeredDictionaries = {};
+const fakeLocale = {
+  register(ns, dict) { registeredDictionaries[ns] = dict; return () => { delete registeredDictionaries[ns]; }; },
+};
+
 let effectCleanups = [];
 const fakeCtx = {
-  slots: { inject: (s, f) => { fakeCtx._thunk = f; }, register: (o, c) => { fakeCtx._opts = o; fakeCtx._comp = c; return c; } },
+  _injections: {},
+  _registers: {},
+  slots: {
+    inject: (key, f) => { fakeCtx._injections[key] = f; },
+    register: (options, comp) => { fakeCtx._registers[options.name] = { options, comp }; return comp; },
+  },
   sessions: { list: listStore },
   uiSession: { pendingInteractions: pendingStore },
+  locale: fakeLocale,
   logger: { warn: () => {} },
+  get(name) {
+    if (name === "settingsScope") return fakeSettingsScope;
+    if (name === "locale") return fakeLocale;
+    return void 0;
+  },
   effect(fn, label) { const cleanup = fn(); effectCleanups.push(() => cleanup && cleanup()); },
 };
 
 exported.apply(fakeCtx);
-const comp = fakeCtx._thunk(); // owner resolves the slot
-assert.strictEqual(fakeCtx._opts.id, "session-status");
-assert.strictEqual(typeof comp, "function");
 
+// Resolve the two registered slots.
+const sidebarComp = fakeCtx._injections["sidebar.footer.action"]();
+const sidebarReg = fakeCtx._registers["sidebar.footer.action"];
+const rowComp = fakeCtx._injections["settings.general.item"]();
+const rowReg = fakeCtx._registers["settings.general.item"];
+
+assert.strictEqual(typeof sidebarComp, "function", "sidebar slot resolves to a component");
+assert.strictEqual(typeof rowComp, "function", "settings row slot resolves to a component");
+assert.strictEqual(sidebarReg.options.id, "session-status");
+assert.strictEqual(rowReg.options.id, "session-status");
+assert.strictEqual(rowReg.options.order, 20);
+assert.ok(rowReg.options.locale, "row declares a locale namespace");
+
+// ── helpers ───────────────────────────────────────────────────────────────
 const dot = (out) => out.props.children.props["data-state"];
 const state = (out) => out.props["data-dss-state"];
-const EMPTY = () => new Map();
+const sidebarProps = () => ({ useSessions: (s) => s(listStore.value), useSessionPendingInteraction: (s) => s(pendingStore.value) });
+function decodedSvg(href) { return decodeURIComponent(href.slice("data:image/svg+xml,".length)); }
+const t = (key) => registeredDictionaries[rowReg.options.locale].zh[key];
+function rowProps() {
+  // The framework hands the row its bound `t` plus the inject face's output.
+  return Object.assign({ t }, rowReg.options.inject());
+}
+function buttonOf(out, id) {
+  // Walk the created element tree for the button whose aria-pressed/key matches.
+  const found = [];
+  (function walk(node) {
+    if (!node || typeof node !== "object") return;
+    if (node.type === "button") found.push(node);
+    const kids = node.props && node.props.children;
+    if (Array.isArray(kids)) kids.forEach(walk);
+    else if (kids) walk(kids);
+  })(out);
+  return found.find((b) => b.props["key"] === id);
+}
 
-// ── 1. initial prime: idle → green favicon, title untouched ──────────────
+// ── 1. initial prime: idle + replace → plain green dot favicon ───────────
 assert.strictEqual(fakeDoc.title, "DeepSeek Harness", "title must stay untouched");
-assert.ok(iconLink.href.startsWith("data:image/svg+xml,"), "favicon should be a data URI");
-assert.ok(iconLink.href.includes(encodeURIComponent("#22c55e")), "initial favicon should be green");
-assert.strictEqual(state(comp({ useSessions: (s) => s(listStore.value), useSessionPendingInteraction: (s) => s(pendingStore.value) })), "idle");
+let svg = decodedSvg(iconLink.href);
+assert.ok(svg.includes("fill=\"#22c55e\""), "initial favicon should be green");
+assert.ok(!svg.includes("<path"), "replace mode must NOT embed the logo path");
+assert.strictEqual(state(sidebarComp(sidebarProps())), "idle");
 
-// ── 2. list store change → running → yellow favicon, title still untouched ─
+// ── 2. list store change → running → yellow dot (replace) ─────────────────
 listStore.set({ ids: ["s1", "s2"], byId: { s1: { running: true }, s2: { running: false } } });
 assert.strictEqual(fakeDoc.title, "DeepSeek Harness", "title still untouched while running");
-assert.ok(iconLink.href.includes(encodeURIComponent("#f59e0b")), "favicon should be yellow");
-const runOut = comp({ useSessions: (s) => s(listStore.value), useSessionPendingInteraction: (s) => s(pendingStore.value) });
-assert.strictEqual(state(runOut), "running");
-assert.strictEqual(dot(runOut), "running");
+svg = decodedSvg(iconLink.href);
+assert.ok(svg.includes("fill=\"#f59e0b\""), "favicon should be yellow");
+assert.ok(!svg.includes("<path"), "replace mode stays logo-free");
+assert.strictEqual(state(sidebarComp(sidebarProps())), "running");
 
-// ── 3. pending store change → blocked → red favicon (overrides running) ───
-const pending = new Map([["s1", { kind: "question" }], ["s2", { kind: "approval" }]]);
-pendingStore.set(pending);
-assert.strictEqual(fakeDoc.title, "DeepSeek Harness", "title still untouched while blocked");
-assert.ok(iconLink.href.includes(encodeURIComponent("#ef4444")), "favicon should be red");
-const blkOut = comp({ useSessions: (s) => s(listStore.value), useSessionPendingInteraction: (s) => s(pendingStore.value) });
-assert.strictEqual(state(blkOut), "blocked");
-assert.strictEqual(dot(blkOut), "blocked");
+// ── 3. pending store change → blocked → red dot (overrides running) ───────
+pendingStore.set(new Map([["s1", { kind: "question" }], ["s2", { kind: "approval" }]]));
+svg = decodedSvg(iconLink.href);
+assert.ok(svg.includes("fill=\"#ef4444\""), "favicon should be red");
+assert.strictEqual(state(sidebarComp(sidebarProps())), "blocked");
 
-// ── 4. back to idle → green favicon again ─────────────────────────────────
+// ── 4. back to idle → green again ─────────────────────────────────────────
 pendingStore.set(new Map());
 listStore.set({ ids: ["s1", "s2"], byId: { s1: { running: false }, s2: { running: false } } });
-assert.strictEqual(fakeDoc.title, "DeepSeek Harness", "title still untouched back at idle");
-assert.ok(iconLink.href.includes(encodeURIComponent("#22c55e")), "favicon should be green again");
+svg = decodedSvg(iconLink.href);
+assert.ok(svg.includes("fill=\"#22c55e\""), "favicon should be green again");
 
-// ── 5. no duplicate favicon writes on no-op state ─────────────────────────
+// ── 5. no duplicate favicon writes on no-op state (replace) ───────────────
 let writes = 0;
-iconLink._href = iconLink.href; // capture current value before installing accessor
+iconLink._href = iconLink.href;
 Object.defineProperty(iconLink, "href", {
   get() { return iconLink._href; },
   set(v) { writes++; iconLink._href = v; },
@@ -120,22 +196,89 @@ listStore.set({ ids: ["s1"], byId: { s1: { running: false } } }); // still idle
 assert.strictEqual(writes, 0, "no favicon rewrite when state is unchanged");
 assert.strictEqual(iconLink._href, hrefBefore);
 
-// ── 6. disposal restores original favicon, unsubscribes, title untouched ──
+// ── 6. settings row renders with the bound scope; replace is preselected ──
+assert.ok(rowReg.options.inject().tabIconScope === fakeScope, "row inject face carries the bound scope");
+assert.strictEqual(fakeSettingsScope.bound.namespace, "session-status", "scope bound to the session-status namespace");
+let rowOut = rowComp(rowProps());
+const replaceBtn = buttonOf(rowOut, "replace");
+const combinedBtn = buttonOf(rowOut, "combined");
+assert.ok(replaceBtn, "row renders a replace option");
+assert.ok(combinedBtn, "row renders a combined option");
+assert.strictEqual(replaceBtn.props["aria-pressed"], true, "replace preselected in replace mode");
+assert.strictEqual(combinedBtn.props["aria-pressed"], false, "combined not selected in replace mode");
+assert.strictEqual(replaceBtn.props.disabled, false, "row enabled while scope is ready");
+assert.ok(replaceBtn.props.title && replaceBtn.props.title.length > 0, "options carry a hint title");
+
+// ── 7. click "combined" → persisted write → composite favicon (logo + dot) ─
+combinedBtn.props.onClick();
+// scope.set notifies the effect's subscription → favicon re-applies in combined mode.
+svg = decodedSvg(iconLink.href);
+assert.ok(svg.includes("<path"), "combined mode embeds the original logo path");
+assert.ok(svg.includes("dssl"), "combined mode marks the logo for light/dark fill");
+assert.ok(svg.includes('fill="#fff"'), "combined mode adds a white ring behind the dot");
+assert.ok(svg.includes("fill=\"#22c55e\""), "combined mode dot keeps the state color (idle/green)");
+// The row re-renders with combined now selected (scope snapshot advanced).
+rowOut = rowComp(rowProps());
+assert.strictEqual(buttonOf(rowOut, "combined").props["aria-pressed"], true, "combined selected after click");
+assert.strictEqual(buttonOf(rowOut, "replace").props["aria-pressed"], false, "replace deselected after click");
+assert.strictEqual(fakeScope.getSnapshot().value.iconMode, "combined", "write persisted to the scope document");
+
+// ── 8. state change while in combined mode recolors the overlaid dot ──────
+listStore.set({ ids: ["s1", "s2"], byId: { s1: { running: true }, s2: { running: false } } });
+svg = decodedSvg(iconLink.href);
+assert.ok(svg.includes("<path"), "logo still present in combined mode");
+assert.ok(svg.includes("fill=\"#f59e0b\""), "combined dot recolors to running/yellow");
+
+// ── 9. click back to "replace" → plain dot favicon restored ───────────────
+rowOut = rowComp(rowProps());
+buttonOf(rowOut, "replace").props.onClick();
+svg = decodedSvg(iconLink.href);
+assert.ok(!svg.includes("<path"), "replace mode drops the logo path");
+assert.ok(svg.includes("fill=\"#f59e0b\""), "replace mode keeps the running/yellow color");
+assert.strictEqual(fakeScope.getSnapshot().value.iconMode, "replace", "mode persisted back to replace");
+
+// ── 10. dispose: restore favicon, drop list/pending/scope subscriptions ───
 for (const c of effectCleanups.reverse()) c();
 assert.strictEqual(fakeDoc.title, "DeepSeek Harness", "title was never modified");
 assert.strictEqual(iconLink._href, "/favicon.ico", "original favicon restored on dispose");
 assert.strictEqual(listStore._listeners.size, 0, "list subscription removed on dispose");
 assert.strictEqual(pendingStore._listeners.size, 0, "pending subscription removed on dispose");
+assert.strictEqual(fakeScope._listeners.size, 0, "settings scope subscription removed on dispose");
 
-// ── 7. absent hooks edge (sidebar component) ──────────────────────────────
-const absent = comp({});
-assert.strictEqual(state(absent), "idle");
+// ── 11. absent settings base degrades: no row, but dot + favicon still work ─
+const scopelessCtx = {
+  _injections: {},
+  _registers: {},
+  slots: { inject: (k, f) => { scopelessCtx._injections[k] = f; }, register: (o, c) => { scopelessCtx._registers[o.name] = { options: o, comp: c }; return c; } },
+  sessions: { list: listStore },
+  uiSession: { pendingInteractions: pendingStore },
+  locale: fakeLocale,
+  logger: { warn: () => {} },
+  get: (name) => (name === "locale" ? fakeLocale : void 0), // no settingsScope
+  effect(fn) { const cleanup = fn(); effectCleanups.push(() => cleanup && cleanup()); },
+};
+exported.apply(scopelessCtx);
+// Owner resolves each declared slot by invoking its thunk (which registers).
+if (scopelessCtx._injections["sidebar.footer.action"]) scopelessCtx._injections["sidebar.footer.action"]();
+if (scopelessCtx._injections["settings.general.item"]) scopelessCtx._injections["settings.general.item"]();
+assert.strictEqual(scopelessCtx._registers["settings.general.item"], undefined, "no settings row registered when the settings base is absent");
+// The core indicator (sidebar dot + favicon) is still registered and functional.
+assert.ok(scopelessCtx._registers["sidebar.footer.action"], "sidebar dot still registered without settings base");
+const scopelessSidebar = scopelessCtx._injections["sidebar.footer.action"]();
+assert.strictEqual(state(scopelessSidebar({ useSessions: (s) => s(listStore.value), useSessionPendingInteraction: (s) => s(pendingStore.value) })), "running");
+assert.ok(decodedSvg(iconLink.href).includes("fill=\"#f59e0b\""), "favicon still tracks state without settings base (replace default)");
+// dispose the extra effect
+for (const c of effectCleanups.reverse()) c();
 
-console.log("PASS 1/7 initial prime: green favicon, title untouched");
-console.log("PASS 2/7 list change → yellow favicon, title untouched");
-console.log("PASS 3/7 pending change → red favicon (overrides running), title untouched");
-console.log("PASS 4/7 back to idle → green favicon restored");
-console.log("PASS 5/7 no-op state changes do not re-write favicon");
-console.log("PASS 6/7 dispose restores favicon, removes subscriptions, title intact");
-console.log("PASS 7/7 sidebar component tolerates absent hooks");
-console.log("ALL TAB-STATUS CHECKS PASSED");
+console.log("PASS 1/11 initial prime: green plain-dot favicon (replace), title untouched");
+console.log("PASS 2/11 list change → yellow plain dot (replace), title untouched");
+console.log("PASS 3/11 pending change → red plain dot (overrides running)");
+console.log("PASS 4/11 back to idle → green plain dot restored");
+console.log("PASS 5/11 no-op state changes do not re-write favicon");
+console.log("PASS 6/11 settings row renders; replace preselected; scope bound to session-status");
+console.log("PASS 7/11 click combined → persisted write → composite favicon (logo + state dot)");
+console.log("PASS 8/11 state change in combined mode recolors the overlaid dot");
+console.log("PASS 9/11 click replace → plain-dot favicon restored, mode persisted");
+console.log("PASS 10/11 dispose restores favicon and removes all subscriptions (incl. scope)");
+console.log("PASS 11/11 absent settings base: no row, but dot + favicon still work");
+console.log("ALL TAB-STATUS CHECKS PASSED (v0.3.0)");

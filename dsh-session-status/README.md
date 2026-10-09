@@ -36,15 +36,43 @@ always-visible list slot at the sidebar foot, beside Settings / the Cordis panel
 visible even when the sidebar collapses to the 56px rail). Uses a fresh
 `id: "session-status"`, so it is purely additive and shadows no shipped UI.
 
-**Browser tab** (v0.2.0, favicon-only since v0.2.1) — for the lifetime of the
-plugin the favicon swaps to a solid dot of the matching color (an inline SVG
-data URI — no network, no build). This is the genuinely *colored* part of the
-tab, and it shows in the OS taskbar/dock too.
+**Browser tab** (v0.2.0; favicon-only since v0.2.1; two configurable modes since
+v0.3.0) — for the lifetime of the plugin the favicon swaps to a status icon of the
+matching color (an inline SVG data URI — no network, no build). This is the
+genuinely *colored* part of the tab, and it shows in the OS taskbar/dock too.
 
 > v0.2.0 also prefixed `document.title` with an emoji (`🟢 DeepSeek Harness`),
 > but the emoji renders in the tab as a second colored dot right beside the
 > favicon — two status icons side by side. Since v0.2.1 the **title is left
 > untouched** and the favicon alone carries the state.
+
+## Tab-icon mode (v0.3.0, configurable in Settings)
+
+A new **"Tab favicon"** row appears under **Settings → General**, offering two
+modes:
+
+| Mode | Effect | Notes |
+| --- | --- | --- |
+| **Replace the original icon** (default) | a solid state dot | the existing v0.2.1 behavior — the original DSH icon is hidden |
+| **Keep the original icon** | the original DSH logo + a state dot at its bottom-right | composed in a *single* inline SVG (the logo path is inlined — no network); the logo fill adapts to light/dark via `prefers-color-scheme`, and the dot has a white ring so it stays legible on any background |
+
+- The choice takes effect immediately and **persists** to the DSH settings
+  document (`$DSH_HOME/settings.yaml`, the host `session-status` namespace,
+  hot-reloaded by the `dsh-settings-file` provider) — it survives across tabs and
+  restarts.
+- It rides DSH's native settings chain: the host half does
+  `ctx.settings.register("session-status", …)` (the schema is a hand-rolled,
+  dependency-free schemastery-compatible node — a callable resolver plus a frozen
+  `toJSON()` envelope byte-identical to real schemastery serialization, which the
+  browser rehydrates with its own vendored copy); the browser half binds
+  `ctx.settingsScope.bind({ namespace })`, reads the scope with
+  `useSyncExternalStore`, and writes with `scope.set("iconMode", …)`
+  (revision-fenced — concurrent writes reject rather than clobber).
+- **Graceful degradation**: if the settings base layer is absent (or the host half
+  has not taken effect across a restart yet, so the scope is not ready), the
+  sidebar dot and favicon keep working (defaulting to the *replace* mode) and the
+  settings row is simply not rendered / its buttons are disabled — the core
+  indicator never breaks because the settings surface is missing.
 
 Implementation note: it subscribes to the **same** two standard stores the
 sidebar dot reads (no React, no polling), so the two never disagree; the
@@ -59,7 +87,7 @@ dsh-session-status/
 ├── package.json          # dsh.bundle.patch + dsh.client{platform:web}
 ├── cordis.patch.yml      # host Loader row (- insert: {id, name})
 └── lib/
-    ├── index.js          # host half: empty apply() (pure UI plugin)
+    ├── index.js          # host half: registers the session-status settings namespace (zero-dep schema)
     └── client.js         # browser half: window.__ModuleLoader__.load(...) CJS bundle
 ```
 

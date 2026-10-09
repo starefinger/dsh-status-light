@@ -36,13 +36,35 @@ DeepSeek Harness Web GUI 插件：在侧栏底部常驻一个红/黄/绿状态�
 Settings / Cordis 面板并列；即使侧栏折叠成 56px 窄轨也可见）。使用全新
 `id: "session-status"`，是**纯增量**添加，不会替换或遮蔽任何出厂 UI。
 
-**浏览器标签页**（v0.2.0，v0.2.1 起仅 favicon）：在插件生命周期内把 favicon
-切换为对应颜色的圆点（内联 SVG data URI，零网络请求、零构建）——这是 tab 上
-**真实着色**的部分，OS 任务栏/dock 上也可见。
+**浏览器标签页**（v0.2.0 引入；v0.2.1 起仅 favicon；v0.3.0 起两种显示模式可配置）：
+在插件生命周期内把 favicon 切换为对应颜色的状态图标（内联 SVG data URI，零网络
+请求、零构建）——这是 tab 上**真实着色**的部分，OS 任务栏/dock 上也可见。
 
 > v0.2.0 曾在标题前加 emoji 前缀（`🟢 DeepSeek Harness`），但 emoji 在 tab 上
 > 会渲染成紧跟 favicon 的第二个彩色圆，与 favicon 重复成"两个状态图标"，
 > v0.2.1 起**标题保持原生不变**，状态仅由 favicon 一个图标表达。
+
+## 标签页图标模式（v0.3.0，设置页可配置）
+
+**Settings → 通用** 里新增「标签页图标」一行，两种模式：
+
+| 模式 | 效果 | 说明 |
+| --- | --- | --- |
+| **代替原图标**（默认） | 纯色状态圆点 | v0.2.1 的现有行为，原 DSH 图标被隐藏 |
+| **与原图标共存** | 原 DSH logo + 右下角状态圆点 | 合成在**单个**内联 SVG 里（logo 路径内联，零网络请求）；logo 颜色随 `prefers-color-scheme` 自动适配明暗主题，状态圆点外圈白色描边保证任意底色下清晰 |
+
+- 选择即时生效并**持久化**到 DSH 设置文档（`$DSH_HOME/settings.yaml`，宿主侧
+  `session-status` 命名空间，`dsh-settings-file` 提供方热加载）；跨标签页、跨
+  重启保持。
+- 实现走 DSH 原生设置链路：宿主半 `ctx.settings.register("session-status", …)`
+  注册命名空间（schema 为零依赖的手写 schemastery 兼容节点：可调用解析器 +
+  `toJSON()` 冻结信封，信封与真实 schemastery 序列化逐字节一致，客户端用自己的
+  vendored schemastery 无损 rehydrate）；浏览器半 `ctx.settingsScope.bind({namespace})`
+  绑定 scope，行组件用 `useSyncExternalStore` 直读 scope，点击走 `scope.set("iconMode", …)`
+  （revision 围栏写入，冲突不会互相覆盖）。
+- **优雅降级**：组合里没有 settings 基础层时（或宿主半尚未随重启生效、scope
+  未就绪时），侧栏灯与 favicon 照常工作（默认"代替"模式），设置行不出现 /
+  按钮置灰——核心功能从不因设置面缺席而失效。
 
 实现要点：直接订阅与侧栏灯**同一对**标准 store，无需 React、无需轮询，两处
 状态必然一致；`ctx.effect` 的 disposer 在插件卸载 / HMR 重载时自动退订并
@@ -55,7 +77,7 @@ dsh-session-status/
 ├── package.json          # dsh.bundle.patch + dsh.client{platform:web}
 ├── cordis.patch.yml      # 主机侧 Loader 行（- insert: {id, name}）
 └── lib/
-    ├── index.js          # 主机半：空 apply()（纯 UI 插件，让包进入 Loader）
+    ├── index.js          # 主机半：注册 session-status 设置命名空间（零依赖 schema）
     └── client.js         # 浏览器半：window.__ModuleLoader__.load(...) CJS 包
 ```
 
