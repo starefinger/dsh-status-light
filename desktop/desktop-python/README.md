@@ -36,15 +36,29 @@ uses the standard library, so `--once` works without them.
 ## Run
 
 ```powershell
-python status_tray.py                 # default: http://127.0.0.1:3080
+python status_tray.py                 # tray icon (default)
+python status_tray.py --widget        # always-on-top corner pill (tkinter)
 python status_tray.py --host 127.0.0.1 --port 3080
 python status_tray.py --poll          # poll the snapshot endpoint instead of SSE
 python status_tray.py --once          # print one snapshot as JSON, then exit
 ```
 
+### Tray mode (default)
+
 Right-click the tray icon for **刷新 / Refresh** and **退出 / Quit**. The
 status line under the icon shows the state plus the blocked / running
-counts (and the running agent ids).
+counts (and the running agent ids). On Windows the icon may start in the
+hidden-icons overflow (the `^` chevron by the clock).
+
+### Widget mode (`--widget`)
+
+A small frameless **pill docked to the bottom-right corner that stays above
+every other window** (`-topmost` → `WS_EX_TOPMOST`). Built with **tkinter —
+part of the Python standard library, zero extra dependencies**. Double-click
+toggles pin/unpin; right-click gives **固定在最前 / 退出**. The pill is
+persistent (no hide mode) so the status is always visible; quit from the
+right-click menu to remove it. Both modes share the same SSE client, so
+transport, keepalive, and the gray-unreachable fallback behave identically.
 
 ## How it connects
 
@@ -69,4 +83,5 @@ retrying with backoff.
 - `status_tray.py` — the tool (tray + stdlib HTTP/SSE client).
 - `icons/{red,yellow,green,gray}.png` — the four 64×64 tray icons.
 - `make_icons.py` — regenerates the icons (pure stdlib, no Pillow needed).
-- `requirements.txt` — runtime dependencies (pystray, Pillow).
+- `requirements.txt` — runtime dependencies (pystray, Pillow — tray mode
+  only; `--widget` and `--once` work with the standard library alone).

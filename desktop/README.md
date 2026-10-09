@@ -23,7 +23,7 @@ The bridge itself — its data sources, safety gates, and the
 
 | Folder | Stack | Status |
 | --- | --- | --- |
-| [`desktop-python/`](desktop-python/) | Python 3.9+ · pystray + Pillow | ✅ current — single `status_tray.py`, streams the SSE endpoint |
+| [`desktop-python/`](desktop-python/) | Python 3.9+ · (pystray + Pillow for tray mode; stdlib-only `--widget`) | ✅ current — single `status_tray.py`, streams the SSE endpoint, renders as a tray icon or an always-on-top corner pill |
 
 > Adding a new version: drop a `desktop-<name>/` folder with its own
 > `README` (how to build & run) and a one-row entry in the table above. The

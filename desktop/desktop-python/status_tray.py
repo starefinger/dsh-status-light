@@ -54,6 +54,15 @@ ICON_FILE = {
     IDLE: "green.png",
     UNKNOWN: "gray.png",
 }
+# Hex colors for the widget pill (same hues as the PNG icons).
+STATE_COLOR = {
+    BLOCKED: "#ef4444",
+    RUNNING: "#f59e0b",
+    IDLE: "#22c55e",
+    UNKNOWN: "#9ca3af",
+}
+PILL_BG = "#111827"
+PILL_FG = "#f9fafb"
 # display order for the menu status line
 STATE_LABEL = {
     BLOCKED: "需人工处理 (blocked)",
@@ -337,6 +346,88 @@ def run_tray(args):
         client.stop()
 
 
+def run_widget(args):
+    """Always-on-top desktop pill (tkinter, stdlib only).
+
+    A small frameless capsule docked to the screen corner that stays above
+    every other window (WS_EX_TOPMOST via -topmost). The SAME StatusClient
+    feeds it, so transport/SSE/keepalive logic is shared with the tray.
+
+    Interactions:
+      double-click  pin/unpin topmost
+      right-click   context menu (pin / quit)
+    The pill is intentionally persistent (no hide mode) so the status is
+    always visible; quit from the right-click menu to remove it.
+    """
+    import tkinter as tk
+
+    client = StatusClient(host=args.host, port=args.port, poll_only=args.poll)
+    root = tk.Tk()
+    root.title("dsh-session-status")
+    root.overrideredirect(True)            # no title bar / taskbar entry
+    root.attributes("-topmost", True)     # stay above all windows
+
+    state_var = tk.StringVar(value=TITLE[UNKNOWN])
+    # pill: colored dot (oval) + label, dark capsule background
+    frame = tk.Frame(root, bg=PILL_BG, padx=12, pady=6, bd=0)
+    frame.place(x=0, y=0, relwidth=1.0, relheight=1.0)
+    dot = tk.Canvas(frame, width=14, height=14, bg=PILL_BG,
+                    highlightthickness=0, bd=0)
+    dot.place(x=8, y=6)
+    oval = dot.create_oval(1, 1, 13, 13, fill=STATE_COLOR[UNKNOWN], outline="")
+    label = tk.Label(frame, textvariable=state_var, bg=PILL_BG, fg=PILL_FG,
+                     font=("Segoe UI", 9, "bold"), anchor="w")
+    label.place(x=28, y=6)
+    root.update_idletasks()
+    # dock bottom-right of the primary screen, offset from the tray
+    sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
+    pw, ph = root.winfo_reqwidth(), root.winfo_reqheight()
+    x = sw - pw - 24
+    y = sh - ph - 40
+    root.geometry("%dx%d+%d+%d" % (pw, ph, x, y))
+
+    pinned_box = [True]   # mutable cell so paint/_toggle_pin share the flag
+
+    def paint(st, snap):
+        # called from the client thread -> marshal onto the tk thread
+        def _apply():
+            state_var.set(TITLE[st])
+            dot.itemconfig(oval, fill=STATE_COLOR[st])
+            # Re-assert topmost (some windows steal it) — only while the
+            # user has it pinned, so a deliberate unpin is never overridden.
+            if root.winfo_exists() and pinned_box[0]:
+                root.attributes("-topmost", True)
+        try:
+            root.after(0, _apply)
+        except Exception:
+            pass
+
+    client.on_state = paint
+    client.start()
+    menu = tk.Menu(root, tearoff=0)
+    menu.add_command(label="固定在最前 / Pin on top", state="disabled")
+    menu.add_separator()
+    menu.add_command(label="退出 / Quit",
+                     command=lambda: (client.stop(), root.destroy()))
+    frame.bind("<Button-3>", lambda e: menu.tk_popup(e.x_root, e.y_root))
+    label.bind("<Button-3>", lambda e: menu.tk_popup(e.x_root, e.y_root))
+    dot.bind("<Button-3>", lambda e: menu.tk_popup(e.x_root, e.y_root))
+
+    def _toggle_pin(_e=None):
+        pinned_box[0] = not pinned_box[0]
+        root.attributes("-topmost", pinned_box[0])
+        menu.entryconfig(0, label=("取消置顶 / Unpin" if pinned_box[0]
+                                   else "固定在最前 / Pin on top"))
+
+    for w in (frame, label, dot):
+        w.bind("<Double-Button-1>", _toggle_pin)
+    root.protocol("WM_DELETE_WINDOW", lambda: (client.stop(), root.destroy()))
+    try:
+        root.mainloop()
+    finally:
+        client.stop()
+
+
 def cmd_once(args):
     """Print one snapshot (and the derived state) and exit. No GUI needed."""
     client = StatusClient(host=args.host, port=args.port)
@@ -359,11 +450,16 @@ def main(argv=None):
                    help="poll the snapshot endpoint instead of the SSE stream")
     p.add_argument("--once", action="store_true",
                    help="print one snapshot as JSON and exit (no tray)")
+    p.add_argument("--widget", action="store_true",
+                   help="show an always-on-top corner pill instead of the tray")
     p.add_argument("--timeout", type=float, default=4.0)
     args = p.parse_args(argv)
 
     if args.once:
         return cmd_once(args)
+    if args.widget:
+        run_widget(args)
+        return 0
     run_tray(args)
     return 0
 
