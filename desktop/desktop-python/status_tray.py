@@ -69,7 +69,7 @@ WIDGET_MIN_W = 120
 WIDGET_MIN_H = 30
 WIDGET_MAX_W = 720
 WIDGET_MAX_H = 240
-WIDGET_HANDLE = 12  # bottom-right resize hit area, px
+WIDGET_HANDLE = 16  # bottom-right resize grip, px
 WIDGET_STATE_FILE = os.path.join(
     os.path.expanduser("~"), ".dsh_session_status_widget.json")
 
@@ -316,13 +316,85 @@ def _icon_path(state):
     return os.path.join(ICON_DIR, ICON_FILE[state])
 
 
+def _separator():
+    """pystray's shared SEPARATOR sentinel.
+
+    No pystray release exposes a top-level Separator() — the documented
+    separator is the shared pystray.Menu.SEPARATOR sentinel (a disabled
+    "- - - -" item) in both 0.18 and 0.19. Fall back to it defensively if a
+    future build relocates it.
+    """
+    import pystray
+    return getattr(pystray.Menu, "SEPARATOR", pystray.MenuItem("- - - -", None))
+
+
+def status_line(client):
+    """Dynamic status row shown at the top of the tray menu."""
+    snap = client.snapshot or {}
+    st = client.state
+    try:
+        b = int(snap.get("blocked", 0))
+        r = int(snap.get("running", 0))
+        ids = snap.get("runningIds") or []
+    except (TypeError, ValueError):
+        b = r = 0
+        ids = []
+    line = "状态: %s  ·  阻塞 %d  ·  运行 %d" % (STATE_LABEL[st], b, r)
+    if st == RUNNING and ids:
+        line += "\n正在运行: " + ", ".join(str(x) for x in ids)
+    return line
+
+
+def _tray_build_menu(client, on_quit):
+    """The standard tray menu. `on_quit(icon)` runs for the 退出 item."""
+    import pystray
+
+    def _refresh(_icon, _item):
+        try:
+            snap = client.fetch_snapshot()
+            client._apply(snap, ok=True)
+        except Exception:
+            client._apply(None, ok=False)
+
+    def _quit(_icon, _item):
+        on_quit(_icon)
+
+    return (
+        pystray.MenuItem(
+            "status",
+            lambda it: status_line(client),
+            default=True,
+            enabled=False,
+        ),
+        pystray.MenuItem("刷新 / Refresh", _refresh),
+        _separator(),
+        pystray.MenuItem("退出 / Quit", _quit),
+    )
+
+
+def _tray_apply_state(ensure_icon, state):
+    """Recolor + retitle the tray icon for a state.
+
+    Safe from the client thread: the win32/gtk backends route the icon
+    update through their own message queue (NIM_MODIFY / property post).
+    """
+    try:
+        ic = ensure_icon()
+        ic.icon = _load_icon(state)
+        ic.title = TITLE[state]
+    except Exception:
+        pass
+
+
 def run_tray(args):
     import pystray
-    from PIL import Image
 
     client = StatusClient(host=args.host, port=args.port, poll_only=args.poll)
-
     icon = None
+
+    def _quit(_icon):
+        client.stop()
+        _icon.stop()
 
     def ensure_icon():
         nonlocal icon
@@ -331,76 +403,14 @@ def run_tray(args):
                 "dsh-session-status",
                 _load_icon(UNKNOWN),
                 TITLE[UNKNOWN],
-                build_menu(client),
+                _tray_build_menu(client, _quit),
             )
         return icon
 
-    def _separator():
-        # No pystray release exposes a top-level Separator() — the documented
-        # separator is the shared pystray.Menu.SEPARATOR sentinel (a disabled
-        # "- - - -" item) in both 0.18 and 0.19. Fall back to it defensively
-        # if a future build relocates it.
-        return getattr(pystray.Menu, "SEPARATOR", pystray.MenuItem("- - - -", None))
-
-    def build_menu(client):
-        def _refresh(_icon, _item):
-            try:
-                snap = client.fetch_snapshot()
-                client._apply(snap, ok=True)
-            except Exception:
-                client._apply(None, ok=False)
-
-        def _quit(_icon, _item):
-            client.stop()
-            _icon.stop()
-
-        return (
-            pystray.MenuItem(
-                "status",
-                lambda it: status_line(client),
-                default=True,
-                enabled=False,
-            ),
-            pystray.MenuItem("刷新 / Refresh", _refresh),
-            _separator(),
-            pystray.MenuItem("退出 / Quit", _quit),
-        )
-
-    def status_line(client):
-        snap = client.snapshot or {}
-        st = client.state
-        try:
-            b = int(snap.get("blocked", 0))
-            r = int(snap.get("running", 0))
-            ids = snap.get("runningIds") or []
-        except (TypeError, ValueError):
-            b = r = 0
-            ids = []
-        line = "状态: %s  ·  阻塞 %d  ·  运行 %d" % (STATE_LABEL[st], b, r)
-        if st == RUNNING and ids:
-            line += "\n正在运行: " + ", ".join(str(x) for x in ids)
-        return line
-
-    def on_state(state, snapshot):
-        # Called from the client thread. Recolor + retitlize through the
-        # property setters (stable across pystray 0.18/0.19 — the old
-        # update_title()/update_menu(menu) call-form was removed). The menu
-        # itself needs no re-push: its status line is a dynamic callable that
-        # pystray re-evaluates on `Icon.__call__` -> update_menu() each time
-        # the menu is opened.
-        try:
-            ic = ensure_icon()
-            ic.icon = _load_icon(state)
-            ic.title = TITLE[state]
-        except Exception:
-            pass
-
-    client.on_state = on_state
+    client.on_state = lambda st, _snap: _tray_apply_state(ensure_icon, st)
     client.start()
 
     ic = ensure_icon()
-    # paint the first real state as soon as it arrives (on_state), but give
-    # the icon an initial title now.
     try:
         ic.run()
     except KeyboardInterrupt:
@@ -419,12 +429,15 @@ def run_widget(args):
     User-adjustable — everything persists to
     ~/.dsh_session_status_widget.json and survives restarts:
       position  drag the pill body anywhere
-      size      drag the bottom-right corner handle
-                (clamped to WIDGET_MIN..MAX, 120x30 … 720x240)
-      topmost   double-click to pin/unpin, or the right-click menu
+      size      drag the bottom-right grip (the two diagonal lines;
+                clamped to WIDGET_MIN..MAX, 120x30 … 720x240)
+      topmost   double-click to pin/unpin, or click the right-click menu
+                entry 固定在最前 / 取消置顶
     The right-click menu also resets position + size to the default
-    bottom-right dock. The pill is intentionally persistent (no hide
-    mode) so the status is always visible; quit via the menu to remove it.
+    bottom-right dock. With --tray the pill shares one client with a
+    system-tray icon (pystray run_detached; needs pystray + Pillow).
+    The pill is intentionally persistent (no hide mode) so the status is
+    always visible; quit via the menu to remove it.
     """
     import tkinter as tk
 
@@ -444,9 +457,16 @@ def run_widget(args):
     label = tk.Label(frame, textvariable=state_var, bg=PILL_BG, fg=PILL_FG,
                      font=("Segoe UI", 9, "bold"), anchor="w")
     label.place(x=28, y=6)
-    # bottom-right resize handle (corner grip)
-    handle = tk.Frame(frame, width=WIDGET_HANDLE, height=WIDGET_HANDLE,
-                      bg=PILL_BG, cursor="sizing")
+    # bottom-right resize grip: a small canvas with two diagonal lines so
+    # the user can actually SEE where to drag (the previous same-color 12px
+    # box was invisible and could not be grabbed). It stacks above the
+    # label, so long text runs under it — the grip stays the resize corner.
+    handle = tk.Canvas(frame, width=WIDGET_HANDLE, height=WIDGET_HANDLE,
+                       bg=PILL_BG, highlightthickness=0, bd=0,
+                       cursor="sizing")
+    _hc = "#9ca3af"
+    handle.create_line(3, WIDGET_HANDLE - 3, WIDGET_HANDLE - 3, 3, fill=_hc)
+    handle.create_line(8, WIDGET_HANDLE - 3, WIDGET_HANDLE - 3, 8, fill=_hc)
     handle.place(relx=1.0, rely=1.0, anchor="se")
 
     root.update_idletasks()
@@ -469,7 +489,45 @@ def run_widget(args):
         except Exception:
             pass
 
-    client.on_state = paint
+    # Optional companion tray icon (pystray): runs via run_detached so its
+    # message loop lives in its own thread while tkinter owns the main
+    # thread. Both views are painted from the one client thread callback.
+    # The tray is fully up BEFORE client.start() — exactly one start, even
+    # on the fallback path.
+    tray_icon = None
+
+    def _tray_quit(_icon):
+        _icon.stop()
+        if root.winfo_exists():
+            root.destroy()
+
+    if getattr(args, "tray", False):
+        try:
+            import pystray
+            tray_icon = pystray.Icon(
+                "dsh-session-status",
+                _load_icon(UNKNOWN),
+                TITLE[UNKNOWN],
+                _tray_build_menu(client, _tray_quit),
+            )
+            tray_icon.run_detached()
+            _tray_apply_state(lambda: tray_icon, client.state)
+            client.on_state = lambda st, snap: (
+                paint(st, snap),
+                _tray_apply_state(lambda: tray_icon, st),
+            )
+        except Exception as exc:
+            print("[widget] tray companion unavailable (%s) — pill only"
+                  % exc)
+            if tray_icon is not None:
+                try:
+                    tray_icon.stop()
+                except Exception:
+                    pass
+            tray_icon = None
+            client.on_state = paint
+    else:
+        client.on_state = paint
     client.start()
 
     def _persist():
@@ -525,18 +583,32 @@ def run_widget(args):
 
     # --- pin / reset / quit ---
     menu = tk.Menu(root, tearoff=0)
-    menu.add_command(label="固定在最前 / Pin on top", state="disabled")
+    menu.add_command(
+        label=("取消置顶 / Unpin" if pinned_box[0]
+               else "固定在最前 / Pin on top"),
+        command=_toggle_pin)
     menu.add_command(label="重置位置与大小 / Reset", command=_reset_position)
     menu.add_separator()
-    menu.add_command(label="退出 / Quit",
-                     command=lambda: (_persist(), client.stop(),
-                                      root.destroy()))
+    def _quit_all(_e=None):
+        _persist()
+        client.stop()
+        if tray_icon is not None:
+            _stop_tray(tray_icon)
+        root.destroy()
+
+    menu.add_command(label="退出 / Quit", command=_quit_all)
 
     def _toggle_pin(_e=None):
         pinned_box[0] = not pinned_box[0]
         root.attributes("-topmost", pinned_box[0])
         menu.entryconfig(0, label=("取消置顶 / Unpin" if pinned_box[0]
                                    else "固定在最前 / Pin on top"))
+
+    def _stop_tray(icon):
+        try:
+            icon.stop()
+        except Exception:
+            pass
 
     for w in (frame, label, dot):
         w.bind("<ButtonPress-1>", _drag_start)
@@ -545,8 +617,7 @@ def run_widget(args):
         w.bind("<Double-Button-1>", _toggle_pin)
         w.bind("<Button-3>", lambda e: menu.tk_popup(e.x_root, e.y_root))
 
-    root.protocol("WM_DELETE_WINDOW",
-                  lambda: (_persist(), client.stop(), root.destroy()))
+    root.protocol("WM_DELETE_WINDOW", _quit_all)
     try:
         root.mainloop()
     finally:
@@ -577,6 +648,9 @@ def main(argv=None):
                    help="print one snapshot as JSON and exit (no tray)")
     p.add_argument("--widget", action="store_true",
                    help="show an always-on-top corner pill instead of the tray")
+    p.add_argument("--tray", action="store_true",
+                   help="with --widget: also show the system-tray icon "
+                        "(needs pystray + Pillow)")
     p.add_argument("--timeout", type=float, default=4.0)
     args = p.parse_args(argv)
 
