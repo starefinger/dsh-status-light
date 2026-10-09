@@ -506,6 +506,29 @@ def run_widget(args):
     root.title("dsh-session-status")
     root.overrideredirect(True)            # no title bar / taskbar entry
 
+    # UI marshalling: the SSE client thread and pystray's menu thread must
+    # NOT call tkinter directly — even root.after() is only safe from the
+    # main thread, and a cross-thread root.destroy() (the tray 退出 path)
+    # silently no-ops, which is exactly the "quit never exits" bug. Worker
+    # threads post callables to this thread-safe queue; the pump below runs
+    # ON the main thread and executes them.
+    ui_queue = queue.Queue()
+
+    def _ui_poll():
+        try:
+            while True:
+                fn = ui_queue.get_nowait()
+                try:
+                    fn()
+                except Exception:
+                    pass
+        except queue.Empty:
+            pass
+        if root.winfo_exists():
+            root.after(100, _ui_poll)
+
+    root.after(100, _ui_poll)
+
     state_var = tk.StringVar(value=TITLE[UNKNOWN])
     # pill: colored dot (oval) + label, dark capsule background
     frame = tk.Frame(root, bg=PILL_BG, padx=12, pady=6, bd=0)
@@ -539,7 +562,8 @@ def run_widget(args):
         root.withdraw()  # start hidden; the tray icon keeps the status
 
     def paint(st, snap):
-        # called from the client thread -> marshal onto the tk thread
+        # called from the client thread -> marshal onto the main thread via
+        # the UI queue (never call tkinter from this thread)
         def _apply():
             state_var.set(TITLE[st])
             dot.itemconfig(oval, fill=STATE_COLOR[st])
@@ -547,10 +571,7 @@ def run_widget(args):
             # user has it pinned, so a deliberate unpin is never overridden.
             if root.winfo_exists() and pinned_box[0]:
                 root.attributes("-topmost", True)
-        try:
-            root.after(0, _apply)
-        except Exception:
-            pass
+        ui_queue.put(_apply)
 
     def _persist():
         _widget_save_state(root.winfo_x(), root.winfo_y(),
@@ -579,20 +600,13 @@ def run_widget(args):
     tray_icon = None
 
     def _tray_set_visible(v):
-        # Called from the pystray worker thread — marshal onto the tk main
-        # thread (same pattern as paint()).
-        try:
-            root.after(0, lambda: (_set_visible(v), _persist()))
-        except Exception:
-            pass
+        # pystray worker thread -> main thread via the UI queue
+        ui_queue.put(lambda: (_set_visible(v), _persist()))
 
     def _tray_quit(_icon):
         _icon.stop()
-        # Tkinter is not thread-safe; destroy via the main thread.
-        try:
-            root.after(0, root.destroy)
-        except Exception:
-            root.destroy()
+        # destroy must run on the main thread; the pump will pick this up
+        ui_queue.put(root.destroy)
 
     try:
         tray_icon = pystray.Icon(
@@ -714,6 +728,13 @@ def run_widget(args):
         root.mainloop()
     finally:
         client.stop()
+    # pystray's run_detached loop thread is non-daemon: if it lingers after
+    # _icon.stop(), a normal process exit would block on it forever — which
+    # is what made 退出 look like "it never exits". The watchdog lets a
+    # clean exit win; otherwise it force-exits (code 0) after the grace.
+    threading.Thread(
+        target=lambda: (time.sleep(2.0), os._exit(0)),
+        daemon=True, name="dsh-status-exit-watchdog").start()
     return 0
 
 
