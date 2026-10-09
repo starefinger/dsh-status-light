@@ -57,16 +57,12 @@ window.__ModuleLoader__.load({
       return "DSH 状态：空闲（无运行中，无待处理）";
     }
 
-    // ── browser tab status: emoji-prefixed title + colored favicon ─────────
+    // ── browser tab status: colored favicon only ───────────────────────────
     // The web shell never writes document.title (index.html's <title> is
-    // static), so the plugin owns it exclusively. Each browser tab updates its
-    // own title independently; the disposer restores the original title and
-    // icon link on plugin disposal / HMR swap.
-    var TAB_MARK = {
-      blocked: "🔴 ",
-      running: "🟡 ",
-      idle: "🟢 "
-    };
+    // static), so the plugin could own it; an emoji title prefix was tried but
+    // renders as a SECOND colored dot beside the favicon in the tab, so the
+    // title is left untouched and the favicon alone carries the state. The
+    // disposer restores the original icon link on plugin disposal / HMR swap.
     var TAB_HUE = {
       blocked: "#ef4444",
       running: "#f59e0b",
@@ -82,19 +78,16 @@ window.__ModuleLoader__.load({
     function installTabStatus(doc) {
       var link = doc.querySelector('link[rel="icon"], link[rel="shortcut icon"]');
       var originalHref = link ? link.getAttribute("href") : null;
-      var originalTitle = doc.title || "DeepSeek Harness";
       var applied = null;
       var apply = function (state) {
-        if (applied === state) return;
+        if (applied === state || !link) return;
         applied = state;
-        doc.title = (TAB_MARK[state] || TAB_MARK.idle) + originalTitle;
-        if (link) link.href = faviconFor(state);
+        link.href = faviconFor(state);
       };
       var dispose = function () {
-        if (applied === null) return;
+        if (applied === null || !link) return;
         applied = null;
-        doc.title = originalTitle;
-        if (link) link.href = originalHref == null ? "" : originalHref;
+        link.href = originalHref == null ? "" : originalHref;
       };
       return { apply: apply, dispose: dispose };
     }

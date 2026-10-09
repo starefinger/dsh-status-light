@@ -78,57 +78,64 @@ const dot = (out) => out.props.children.props["data-state"];
 const state = (out) => out.props["data-dss-state"];
 const EMPTY = () => new Map();
 
-// ── 1. initial prime: idle → green title + green favicon ─────────────────
-assert.strictEqual(fakeDoc.title, "🟢 DeepSeek Harness", "initial title should be green-prefixed");
+// ── 1. initial prime: idle → green favicon, title untouched ──────────────
+assert.strictEqual(fakeDoc.title, "DeepSeek Harness", "title must stay untouched");
 assert.ok(iconLink.href.startsWith("data:image/svg+xml,"), "favicon should be a data URI");
 assert.ok(iconLink.href.includes(encodeURIComponent("#22c55e")), "initial favicon should be green");
 assert.strictEqual(state(comp({ useSessions: (s) => s(listStore.value), useSessionPendingInteraction: (s) => s(pendingStore.value) })), "idle");
 
-// ── 2. list store change → running → yellow ──────────────────────────────
+// ── 2. list store change → running → yellow favicon, title still untouched ─
 listStore.set({ ids: ["s1", "s2"], byId: { s1: { running: true }, s2: { running: false } } });
-assert.strictEqual(fakeDoc.title, "🟡 DeepSeek Harness", "title should be yellow-prefixed after running");
+assert.strictEqual(fakeDoc.title, "DeepSeek Harness", "title still untouched while running");
 assert.ok(iconLink.href.includes(encodeURIComponent("#f59e0b")), "favicon should be yellow");
 const runOut = comp({ useSessions: (s) => s(listStore.value), useSessionPendingInteraction: (s) => s(pendingStore.value) });
 assert.strictEqual(state(runOut), "running");
 assert.strictEqual(dot(runOut), "running");
 
-// ── 3. pending store change → blocked → red (overrides running) ──────────
+// ── 3. pending store change → blocked → red favicon (overrides running) ───
 const pending = new Map([["s1", { kind: "question" }], ["s2", { kind: "approval" }]]);
 pendingStore.set(pending);
-assert.strictEqual(fakeDoc.title, "🔴 DeepSeek Harness", "title should be red-prefixed when blocked");
+assert.strictEqual(fakeDoc.title, "DeepSeek Harness", "title still untouched while blocked");
 assert.ok(iconLink.href.includes(encodeURIComponent("#ef4444")), "favicon should be red");
 const blkOut = comp({ useSessions: (s) => s(listStore.value), useSessionPendingInteraction: (s) => s(pendingStore.value) });
 assert.strictEqual(state(blkOut), "blocked");
 assert.strictEqual(dot(blkOut), "blocked");
 
-// ── 4. back to idle → green again ────────────────────────────────────────
+// ── 4. back to idle → green favicon again ─────────────────────────────────
 pendingStore.set(new Map());
 listStore.set({ ids: ["s1", "s2"], byId: { s1: { running: false }, s2: { running: false } } });
-assert.strictEqual(fakeDoc.title, "🟢 DeepSeek Harness", "title should return to green");
+assert.strictEqual(fakeDoc.title, "DeepSeek Harness", "title still untouched back at idle");
 assert.ok(iconLink.href.includes(encodeURIComponent("#22c55e")), "favicon should be green again");
 
-// ── 5. no duplicate writes on no-op state ────────────────────────────────
+// ── 5. no duplicate favicon writes on no-op state ─────────────────────────
 let writes = 0;
-const origSetTitle = Object.getOwnPropertyDescriptor(fakeDoc, "title");
+iconLink._href = iconLink.href; // capture current value before installing accessor
+Object.defineProperty(iconLink, "href", {
+  get() { return iconLink._href; },
+  set(v) { writes++; iconLink._href = v; },
+  configurable: true,
+});
+const hrefBefore = iconLink._href;
 listStore.set({ ids: ["s1"], byId: { s1: { running: false } } }); // still idle
-assert.strictEqual(fakeDoc.title, "🟢 DeepSeek Harness");
+assert.strictEqual(writes, 0, "no favicon rewrite when state is unchanged");
+assert.strictEqual(iconLink._href, hrefBefore);
 
-// ── 6. disposal restores original title + favicon, unsubscribes ──────────
+// ── 6. disposal restores original favicon, unsubscribes, title untouched ──
 for (const c of effectCleanups.reverse()) c();
-assert.strictEqual(fakeDoc.title, "DeepSeek Harness", "original title restored on dispose");
-assert.strictEqual(iconLink.href, "/favicon.ico", "original favicon restored on dispose");
+assert.strictEqual(fakeDoc.title, "DeepSeek Harness", "title was never modified");
+assert.strictEqual(iconLink._href, "/favicon.ico", "original favicon restored on dispose");
 assert.strictEqual(listStore._listeners.size, 0, "list subscription removed on dispose");
 assert.strictEqual(pendingStore._listeners.size, 0, "pending subscription removed on dispose");
 
-// ── 7. absent hooks edge (sidebar component) ─────────────────────────────
+// ── 7. absent hooks edge (sidebar component) ──────────────────────────────
 const absent = comp({});
 assert.strictEqual(state(absent), "idle");
 
-console.log("PASS 1/7 initial prime: green title + green favicon");
-console.log("PASS 2/7 list change → yellow title + yellow favicon");
-console.log("PASS 3/7 pending change → red title + red favicon (overrides running)");
-console.log("PASS 4/7 back to idle → green restored");
-console.log("PASS 5/7 no-op state changes do not re-write");
-console.log("PASS 6/7 dispose restores title+favicon, removes subscriptions");
+console.log("PASS 1/7 initial prime: green favicon, title untouched");
+console.log("PASS 2/7 list change → yellow favicon, title untouched");
+console.log("PASS 3/7 pending change → red favicon (overrides running), title untouched");
+console.log("PASS 4/7 back to idle → green favicon restored");
+console.log("PASS 5/7 no-op state changes do not re-write favicon");
+console.log("PASS 6/7 dispose restores favicon, removes subscriptions, title intact");
 console.log("PASS 7/7 sidebar component tolerates absent hooks");
 console.log("ALL TAB-STATUS CHECKS PASSED");

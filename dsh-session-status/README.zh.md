@@ -1,8 +1,8 @@
 # dsh-session-status
 
-DeepSeek Harness Web GUI 插件：在侧栏底部常驻一个红/黄/绿状态灯，并在浏览器标签页
-标题前加 emoji 前缀、把 favicon 换成同色圆点，一眼看出当前 DSH 是否有进程需要
-人工介入、是否正在运行、或完全空闲。
+DeepSeek Harness Web GUI 插件：在侧栏底部常驻一个红/黄/绿状态灯，并把浏览器
+标签页的 favicon 换成同色圆点（标题保持原生不变），一眼看出当前 DSH 是否有
+进程需要人工介入、是否正在运行、或完全空闲。
 
 ## 状态含义
 
@@ -36,18 +36,17 @@ DeepSeek Harness Web GUI 插件：在侧栏底部常驻一个红/黄/绿状态�
 Settings / Cordis 面板并列；即使侧栏折叠成 56px 窄轨也可见）。使用全新
 `id: "session-status"`，是**纯增量**添加，不会替换或遮蔽任何出厂 UI。
 
-**浏览器标签页**（v0.2.0）：在插件生命周期内接管 `document.title` 与 favicon：
+**浏览器标签页**（v0.2.0，v0.2.1 起仅 favicon）：在插件生命周期内把 favicon
+切换为对应颜色的圆点（内联 SVG data URI，零网络请求、零构建）——这是 tab 上
+**真实着色**的部分，OS 任务栏/dock 上也可见。
 
-- 标题加 emoji 前缀：`🔴 / 🟡 / 🟢 DeepSeek Harness`（tab 标题文字无法染色，
-  emoji 是表达颜色的方式）；
-- favicon 切换为对应颜色的圆点（内联 SVG data URI，零网络请求、零构建）——
-  这是 tab 上**真实着色**的部分，OS 任务栏/dock 上也可见。
+> v0.2.0 曾在标题前加 emoji 前缀（`🟢 DeepSeek Harness`），但 emoji 在 tab 上
+> 会渲染成紧跟 favicon 的第二个彩色圆，与 favicon 重复成"两个状态图标"，
+> v0.2.1 起**标题保持原生不变**，状态仅由 favicon 一个图标表达。
 
 实现要点：直接订阅与侧栏灯**同一对**标准 store，无需 React、无需轮询，两处
 状态必然一致；`ctx.effect` 的 disposer 在插件卸载 / HMR 重载时自动退订并
-**恢复原标题与原 favicon**。Web shell 自身从不写 `document.title`
-（`index.html` 的 title 是静态的），无归属冲突；多个浏览器标签各自独立更新
-自己的标题。
+**恢复原 favicon**。多个浏览器标签各自独立更新自己的 favicon。
 
 ## 文件结构
 

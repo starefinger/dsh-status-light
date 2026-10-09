@@ -1,7 +1,7 @@
 {
   "name": "dsh-session-status",
-  "description": "DSH Web GUI plugin: a global red/yellow/green status dot (sidebar footer) plus a browser-tab emoji-prefixed title and colored favicon. Red = a session is blocked waiting for human input (approval / question / plan-review); yellow = a session's agent is running; green = nothing running and nothing blocked.",
-  "version": "0.2.0",
+  "description": "DSH Web GUI plugin: a global red/yellow/green status dot (sidebar footer) plus a colored browser-tab favicon (title untouched). Red = a session is blocked waiting for human input (approval / question / plan-review); yellow = a session's agent is running; green = nothing running and nothing blocked.",
+  "version": "0.2.1",
   "license": "MIT",
   "type": "module",
   "main": "lib/index.js",

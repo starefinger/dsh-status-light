@@ -1,8 +1,8 @@
 # dsh-session-status
 
 DeepSeek Harness Web GUI plugin: a persistent red/yellow/green status dot in the
-sidebar footer, plus an emoji-prefixed browser-tab title and a matching colored
-favicon, showing at a glance whether DSH has a process waiting on a human, a
+sidebar footer, plus a matching colored browser-tab favicon (the title is left
+untouched), showing at a glance whether DSH has a process waiting on a human, a
 process running, or nothing going on.
 
 | Color | Meaning | Condition |
@@ -21,7 +21,7 @@ Reads only two standard client stores (no RPC, no added deps):
 - `sessions.list` (`SnapshotStore<SessionListState>`) →
   `byId[sessionId].running` (the host agent-running bit, kept live by
   `api-session/status` frames). The sidebar dot reads it through the
-  `useSessions` hook; the tab title subscribes to the same store directly.
+  `useSessions` hook; the tab favicon subscribes to the same store directly.
 - `uiSession.pendingInteractions` (a `{getSnapshot, subscribe}` store written by
   `dsh-client-ui-approval` / `dsh-client-ui-user-questions`) → the set of sessions
   awaiting a human. `map.size > 0` means blocked.
@@ -36,27 +36,27 @@ always-visible list slot at the sidebar foot, beside Settings / the Cordis panel
 visible even when the sidebar collapses to the 56px rail). Uses a fresh
 `id: "session-status"`, so it is purely additive and shadows no shipped UI.
 
-**Browser tab** (v0.2.0) — for the lifetime of the plugin it takes over
-`document.title` and the favicon:
+**Browser tab** (v0.2.0, favicon-only since v0.2.1) — for the lifetime of the
+plugin the favicon swaps to a solid dot of the matching color (an inline SVG
+data URI — no network, no build). This is the genuinely *colored* part of the
+tab, and it shows in the OS taskbar/dock too.
 
-- title gets an emoji prefix: `🔴 / 🟡 / 🟢 DeepSeek Harness` (tab title text
-  can't be colored, so the emoji carries the color);
-- the favicon swaps to a solid dot of the matching color (an inline SVG data
-  URI — no network, no build). This is the genuinely *colored* part of the tab,
-  and it shows in the OS taskbar/dock too.
+> v0.2.0 also prefixed `document.title` with an emoji (`🟢 DeepSeek Harness`),
+> but the emoji renders in the tab as a second colored dot right beside the
+> favicon — two status icons side by side. Since v0.2.1 the **title is left
+> untouched** and the favicon alone carries the state.
 
 Implementation note: it subscribes to the **same** two standard stores the
 sidebar dot reads (no React, no polling), so the two never disagree; the
-`ctx.effect` disposer unsubscribes and **restores the original title and
-favicon** on plugin disposal / HMR swap. The web shell itself never writes
-`document.title` (the `index.html` title is static), so there is no ownership
-conflict; each browser tab updates its own title independently.
+`ctx.effect` disposer unsubscribes and **restores the original favicon** on
+plugin disposal / HMR swap; each browser tab updates its own favicon
+independently.
 
 ## Layout
 
 ```
 dsh-session-status/
-├── package.json          # dsh.bundle.patch + dsh.client{platform:web, inject:[slots]}
+├── package.json          # dsh.bundle.patch + dsh.client{platform:web}
 ├── cordis.patch.yml      # host Loader row (- insert: {id, name})
 └── lib/
     ├── index.js          # host half: empty apply() (pure UI plugin)
