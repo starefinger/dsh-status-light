@@ -36,12 +36,15 @@ uses the standard library, so `--once` works without them.
 ## Run
 
 ```powershell
-python status_tray.py                 # tray icon only (default)
-python status_tray.py --widget        # always-on-top pill + tray icon (tkinter + pystray)
+python status_tray.py                 # desktop app: always-on-top pill + tray (default)
+python status_tray.py --tray-only     # tray icon only, no pill window
 python status_tray.py --host 127.0.0.1 --port 3080
 python status_tray.py --poll          # poll the snapshot endpoint instead of SSE
 python status_tray.py --once          # print one snapshot as JSON, then exit
 ```
+
+`python status_tray.py` 与 `python status_tray.py --widget --tray` 等价——
+默认就是"药丸 + 托盘"桌面应用;`--widget`/`--tray` 仅为兼容旧命令保留。
 
 ### Tray mode (default)
 
@@ -70,11 +73,14 @@ bottom-right corner; everything else is user-adjustable:
 无实际作用)。状态、刷新、退出联动——药丸右键退出会一并停掉托盘,
 托盘右键退出会关闭药丸。
 
-**`隐藏窗口 / 显示窗口`**:两个菜单都有——药丸右键菜单提供
-"隐藏窗口",托盘菜单提供"隐藏窗口 / 显示窗口"(文案随状态切换)。
-隐藏后药丸消失,托盘图标继续显示状态;显示状态持久化,重启后保持。
-托盘图标是本模式的必备组件(它是隐藏后唯一的找回入口),缺依赖时
-启动会直接给出 `pip install -r requirements.txt` 提示而不是起半个界面。
+**`隐藏窗口 / 显示窗口`**:药丸右键菜单提供"隐藏窗口";托盘菜单
+提供**两个固定按钮**"显示窗口 / Show"和"隐藏窗口 / Hide"(不做
+单一切换项——win32 后端只在左键点击时重建原生菜单,右键弹出的
+是上次构建的菜单,动态文案会显示成过期方向;两个固定按钮永不
+说谎,点了"当前方向"的那项就是无害的空操作)。隐藏后药丸消失,
+托盘图标继续显示状态;显示状态持久化,重启后保持。托盘图标是本
+模式的必备组件(它是隐藏后唯一的找回入口),缺依赖时启动会直接
+给出 `pip install -r requirements.txt` 提示而不是起半个界面。
 
 **默认高度**为一行紧凑文字(`WIDGET_COMPACT_H` = 32px,宽度按文字
 自适应);需要更大就拖右下角手柄。

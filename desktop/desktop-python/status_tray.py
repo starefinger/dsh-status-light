@@ -20,7 +20,9 @@ Dependencies (see requirements.txt): pystray + Pillow. The fetch/parse core
 has ZERO third-party imports, so `--once` works for testing without them:
 
     python status_tray.py --once            # print one snapshot, exit
-    python status_tray.py                   # run the tray (default 127.0.0.1:3080)
+    python status_tray.py                   # desktop app: always-on-top
+                                             # pill + tray icon (default)
+    python status_tray.py --tray-only       # tray icon only, no pill window
     python status_tray.py --host 127.0.0.1 --port 3080 --poll   # polling only
 """
 
@@ -352,13 +354,16 @@ def status_line(client):
     return line
 
 
-def _tray_build_menu(client, on_quit, toggle_visible=None, is_visible=None):
+def _tray_build_menu(client, on_quit, set_visible=None):
     """The standard tray menu. `on_quit(icon)` runs for the 退出 item.
 
-    When `toggle_visible` (and `is_visible`) are given — i.e. the tray is a
-    companion to a widget window — a 隐藏窗口/显示窗口 entry is inserted
-    before 退出. Its title is a callable, which the backend re-evaluates on
-    every menu open, so it always shows the current direction.
+    When `set_visible(v)` is given — i.e. the tray is a companion to a
+    widget window — TWO fixed entries are inserted before 退出:
+    显示窗口 and 隐藏窗口. Fixed labels are deliberate: the win32 backend
+    only rebuilds its native menu on LEFT-click (Icon.__call__) and at
+    startup — a right-click popup shows the last-built menu, so a single
+    callable-titled "toggle" entry would display a stale direction. Two
+    always-enabled buttons never lie, and the no-op one is harmless.
     """
     import pystray
 
@@ -373,23 +378,26 @@ def _tray_build_menu(client, on_quit, toggle_visible=None, is_visible=None):
         on_quit(_icon)
 
     items = (
+        # text position = callable(item) — 1 arg; evaluated each time the
+        # backend rebuilds the native menu. (An action callable would take
+        # (icon, item) and never fire here anyway: the item is disabled.)
         pystray.MenuItem(
-            "status",
             lambda it: status_line(client),
+            None,
             default=True,
             enabled=False,
         ),
         pystray.MenuItem("刷新 / Refresh", _refresh),
         _separator(),
     )
-    if toggle_visible is not None:
-        def _vis_label(_it):
-            return "显示窗口 / Show" if not is_visible() else "隐藏窗口 / Hide"
-
-        def _vis_toggle(_icon, _item):
-            toggle_visible()
-
-        items = items + (pystray.MenuItem(_vis_label, _vis_toggle),)
+    if set_visible is not None:
+        # pystray invokes menu actions as action(icon, item) — two args.
+        items = items + (
+            pystray.MenuItem("显示窗口 / Show",
+                             lambda ic, it: set_visible(True)),
+            pystray.MenuItem("隐藏窗口 / Hide",
+                             lambda ic, it: set_visible(False)),
+        )
     items = items + (pystray.MenuItem("退出 / Quit", _quit),)
     return items
 
@@ -459,9 +467,13 @@ def run_widget(args):
     bottom-right dock. This desktop version ALWAYS runs both views — the
     pill and a system-tray icon (pystray run_detached, own thread; needs
     pystray + Pillow) — sharing one client: the tray is the only way back
-    after 隐藏窗口, so it is mandatory. Both menus offer 隐藏窗口 (the
-    tray one also 显示窗口); the hidden state is persisted. Default window
-    height is one compact line (WIDGET_COMPACT_H); quit via either menu.
+    after 隐藏窗口, so it is mandatory. The tray menu offers fixed
+    显示窗口 / 隐藏窗口 buttons (two entries, not a toggle: the win32
+    backend only rebuilds its menu on left-click, so a single dynamic
+    entry would show a stale direction on a right-click-only session);
+    the pill's own menu offers 隐藏窗口. The hidden state is persisted.
+    Default window height is one compact line (WIDGET_COMPACT_H); quit
+    via either menu.
     """
     try:
         import tkinter as tk
@@ -559,9 +571,20 @@ def run_widget(args):
     # is fully up BEFORE client.start() — exactly one start.
     tray_icon = None
 
+    def _tray_set_visible(v):
+        # Called from the pystray worker thread — marshal onto the tk main
+        # thread (same pattern as paint()).
+        try:
+            root.after(0, lambda: (_set_visible(v), _persist()))
+        except Exception:
+            pass
+
     def _tray_quit(_icon):
         _icon.stop()
-        if root.winfo_exists():
+        # Tkinter is not thread-safe; destroy via the main thread.
+        try:
+            root.after(0, root.destroy)
+        except Exception:
             root.destroy()
 
     try:
@@ -570,8 +593,7 @@ def run_widget(args):
             _load_icon(UNKNOWN),
             TITLE[UNKNOWN],
             _tray_build_menu(client, _tray_quit,
-                             toggle_visible=_toggle_visible,
-                             is_visible=lambda: visible_box[0]),
+                             set_visible=_tray_set_visible),
         )
         tray_icon.run_detached()
         _tray_apply_state(lambda: tray_icon, client.state)
@@ -711,19 +733,24 @@ def main(argv=None):
     p.add_argument("--once", action="store_true",
                    help="print one snapshot as JSON and exit (no tray)")
     p.add_argument("--widget", action="store_true",
-                   help="show an always-on-top corner pill instead of the tray")
+                   help="default mode: always-on-top pill + tray icon")
     p.add_argument("--tray", action="store_true",
-                   help="no longer needed: --widget always includes the "
+                   help="no longer needed: the pill always includes the "
                         "tray icon (accepted for compatibility)")
+    p.add_argument("--tray-only", action="store_true",
+                   help="tray icon only, no pill window (the pre-default "
+                        "behavior)")
     p.add_argument("--timeout", type=float, default=4.0)
     args = p.parse_args(argv)
 
     if args.once:
         return cmd_once(args)
-    if args.widget:
-        return run_widget(args)
-    run_tray(args)
-    return 0
+    if args.tray_only:
+        run_tray(args)
+        return 0
+    # default (and explicit --widget): the desktop app — always-on-top
+    # pill + tray icon, exactly what --widget --tray used to mean.
+    return run_widget(args)
 
 
 if __name__ == "__main__":
