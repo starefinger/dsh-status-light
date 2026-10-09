@@ -36,8 +36,8 @@ uses the standard library, so `--once` works without them.
 ## Run
 
 ```powershell
-python status_tray.py                 # tray icon (default)
-python status_tray.py --widget        # always-on-top corner pill (tkinter)
+python status_tray.py                 # tray icon only (default)
+python status_tray.py --widget        # always-on-top pill + tray icon (tkinter + pystray)
 python status_tray.py --host 127.0.0.1 --port 3080
 python status_tray.py --poll          # poll the snapshot endpoint instead of SSE
 python status_tray.py --once          # print one snapshot as JSON, then exit
@@ -65,14 +65,16 @@ bottom-right corner; everything else is user-adjustable:
 | **复位** | 右键菜单 `重置位置与大小 / Reset` |
 | **退出** | 右键菜单 `退出 / Quit` |
 
-**药丸 + 托盘图标同时显示**:`python status_tray.py --widget --tray`
-(需要 pystray + Pillow)。同一个 SSE 客户端同时喂两个视图,状态、
-刷新、退出都联动——药丸右键退出会一并停掉托盘,托盘右键退出会
-关闭药丸。**`隐藏窗口 / 显示窗口`**:托盘菜单里两者都有;药丸自身的右键
-菜单里也有"隐藏窗口"。隐藏后药丸消失(托盘图标继续显示状态,
-托盘菜单文案随之变回"显示窗口"),显示状态同样持久化,重启后
-保持。不带 `--tray` 时没有"再显示"的入口,所以药丸菜单不提供
-隐藏项,保存的隐藏状态也会在启动时忽略并提示。
+**`--widget` 模式总是同时显示药丸 + 托盘图标**(同一个 SSE 客户端
+喂两个视图,需要 pystray + Pillow;`--tray` 参数仅为兼容旧命令保留,
+无实际作用)。状态、刷新、退出联动——药丸右键退出会一并停掉托盘,
+托盘右键退出会关闭药丸。
+
+**`隐藏窗口 / 显示窗口`**:两个菜单都有——药丸右键菜单提供
+"隐藏窗口",托盘菜单提供"隐藏窗口 / 显示窗口"(文案随状态切换)。
+隐藏后药丸消失,托盘图标继续显示状态;显示状态持久化,重启后保持。
+托盘图标是本模式的必备组件(它是隐藏后唯一的找回入口),缺依赖时
+启动会直接给出 `pip install -r requirements.txt` 提示而不是起半个界面。
 
 **默认高度**为一行紧凑文字(`WIDGET_COMPACT_H` = 32px,宽度按文字
 自适应);需要更大就拖右下角手柄。
@@ -106,5 +108,6 @@ retrying with backoff.
 - `status_tray.py` — the tool (tray + stdlib HTTP/SSE client).
 - `icons/{red,yellow,green,gray}.png` — the four 64×64 tray icons.
 - `make_icons.py` — regenerates the icons (pure stdlib, no Pillow needed).
-- `requirements.txt` — runtime dependencies (pystray, Pillow — tray mode
-  only; `--widget` and `--once` work with the standard library alone).
+- `requirements.txt` — runtime dependencies: pystray, Pillow
+  (required by both tray modes; `--once` works with the standard
+  library alone).

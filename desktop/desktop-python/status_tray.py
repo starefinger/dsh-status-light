@@ -456,16 +456,31 @@ def run_widget(args):
       topmost   double-click to pin/unpin, or click the right-click menu
                 entry 固定在最前 / 取消置顶
     The right-click menu also resets position + size to the default
-    bottom-right dock. With --tray the pill shares one client with a
-    system-tray icon (pystray run_detached; needs pystray + Pillow). With
-    --tray both menus offer 隐藏窗口 (the tray one also offers 显示窗口):
-    hiding withdraws the pill while the tray icon keeps the status; the
-    hidden state is persisted too. Without --tray there is no way back from
-    a hidden pill, so 隐藏窗口 is not offered and a saved hidden state is
-    ignored at startup. Default window height is one compact line
-    (WIDGET_COMPACT_H); quit via either menu.
+    bottom-right dock. This desktop version ALWAYS runs both views — the
+    pill and a system-tray icon (pystray run_detached, own thread; needs
+    pystray + Pillow) — sharing one client: the tray is the only way back
+    after 隐藏窗口, so it is mandatory. Both menus offer 隐藏窗口 (the
+    tray one also 显示窗口); the hidden state is persisted. Default window
+    height is one compact line (WIDGET_COMPACT_H); quit via either menu.
     """
-    import tkinter as tk
+    try:
+        import tkinter as tk
+    except Exception as exc:
+        print("[widget] 缺少 tkinter(Python 自带的图形库): %s\n"
+              "Windows: 重新运行 Python 安装器,勾选 tcl/tk and IDLE 组件"
+              % exc)
+        return 1
+
+    # Both views are mandatory (the tray is the way back from 隐藏窗口),
+    # so their deps are too — fail fast with an actionable message instead
+    # of starting half a UI.
+    try:
+        import pystray  # noqa: F401
+        from PIL import Image  # noqa: F401
+    except Exception as exc:
+        print("[widget] 托盘图标是必备组件,缺少依赖: %s\n"
+              "请先执行:  pip install -r requirements.txt" % exc)
+        return 1
 
     client = StatusClient(host=args.host, port=args.port, poll_only=args.poll)
     root = tk.Tk()
@@ -500,13 +515,9 @@ def run_widget(args):
     _widget_place(root, saved)
     pinned_box = [bool(saved["topmost"]) if saved else True]
     root.attributes("-topmost", pinned_box[0])
-    can_hide = bool(getattr(args, "tray", False))
-    if saved and not saved["visible"] and not can_hide:
-        print("[widget] 保存的是隐藏状态,但没有 --tray:没有入口能再显示窗口,"
-              "本次启动按显示处理。")
-    visible_box = [bool(saved["visible"]) if (saved and can_hide) else True]
+    visible_box = [bool(saved["visible"]) if saved else True]
     if not visible_box[0]:
-        root.withdraw()  # start hidden; the --tray icon keeps the status
+        root.withdraw()  # start hidden; the tray icon keeps the status
 
     def paint(st, snap):
         # called from the client thread -> marshal onto the tk thread
@@ -541,11 +552,11 @@ def run_widget(args):
         _set_visible(not visible_box[0])
         _persist()
 
-    # Optional companion tray icon (pystray): runs via run_detached so its
-    # message loop lives in its own thread while tkinter owns the main
-    # thread. Both views are painted from the one client thread callback.
-    # The tray is fully up BEFORE client.start() — exactly one start, even
-    # on the fallback path.
+    # Companion tray icon (pystray) — mandatory in this desktop version:
+    # the tray is how a hidden pill gets shown again. Its message loop runs
+    # via run_detached in its own thread; tkinter owns the main thread.
+    # Both views are painted from the one client thread callback; the tray
+    # is fully up BEFORE client.start() — exactly one start.
     tray_icon = None
 
     def _tray_quit(_icon):
@@ -553,35 +564,34 @@ def run_widget(args):
         if root.winfo_exists():
             root.destroy()
 
-    if getattr(args, "tray", False):
-        try:
-            import pystray
-            tray_icon = pystray.Icon(
-                "dsh-session-status",
-                _load_icon(UNKNOWN),
-                TITLE[UNKNOWN],
-                _tray_build_menu(client, _tray_quit,
-                                 toggle_visible=_toggle_visible,
-                                 is_visible=lambda: visible_box[0]),
-            )
-            tray_icon.run_detached()
-            _tray_apply_state(lambda: tray_icon, client.state)
-            client.on_state = lambda st, snap: (
-                paint(st, snap),
-                _tray_apply_state(lambda: tray_icon, st),
-            )
-        except Exception as exc:
-            print("[widget] tray companion unavailable (%s) — pill only"
-                  % exc)
-            if tray_icon is not None:
-                try:
-                    tray_icon.stop()
-                except Exception:
-                    pass
-            tray_icon = None
-            client.on_state = paint
-    else:
-        client.on_state = paint
+    try:
+        tray_icon = pystray.Icon(
+            "dsh-session-status",
+            _load_icon(UNKNOWN),
+            TITLE[UNKNOWN],
+            _tray_build_menu(client, _tray_quit,
+                             toggle_visible=_toggle_visible,
+                             is_visible=lambda: visible_box[0]),
+        )
+        tray_icon.run_detached()
+        _tray_apply_state(lambda: tray_icon, client.state)
+        client.on_state = lambda st, snap: (
+            paint(st, snap),
+            _tray_apply_state(lambda: tray_icon, st),
+        )
+    except Exception as exc:
+        # The deps imported fine above, so this is a runtime backend
+        # failure (no tray in this session, etc.). Without the tray a
+        # hidden pill has no way back — refuse to start half a UI.
+        print("[widget] 托盘图标(必备组件)启动失败: %s" % exc)
+        if tray_icon is not None:
+            try:
+                tray_icon.stop()
+            except Exception:
+                pass
+        client.stop()
+        root.destroy()
+        return 1
     client.start()
 
     def _reset_position(_e=None):
@@ -651,16 +661,15 @@ def run_widget(args):
         root.destroy()
 
     # Entry 0 is the pin toggle (its label is refreshed by _toggle_pin via
-    # entryconfig(0, …)); keep it first. 隐藏窗口 is offered only with
-    # --tray — otherwise there would be no way back.
+    # entryconfig(0, …)); keep it first. The tray icon is always present,
+    # so 隐藏窗口 is always safe to offer.
     menu = tk.Menu(root, tearoff=0)
     menu.add_command(
         label=("取消置顶 / Unpin" if pinned_box[0]
                else "固定在最前 / Pin on top"),
         command=_toggle_pin)
     menu.add_command(label="重置位置与大小 / Reset", command=_reset_position)
-    if can_hide:
-        menu.add_command(label="隐藏窗口 / Hide", command=_toggle_visible)
+    menu.add_command(label="隐藏窗口 / Hide", command=_toggle_visible)
     menu.add_separator()
     menu.add_command(label="退出 / Quit", command=_quit_all)
 
@@ -676,6 +685,7 @@ def run_widget(args):
         root.mainloop()
     finally:
         client.stop()
+    return 0
 
 
 def cmd_once(args):
@@ -703,16 +713,15 @@ def main(argv=None):
     p.add_argument("--widget", action="store_true",
                    help="show an always-on-top corner pill instead of the tray")
     p.add_argument("--tray", action="store_true",
-                   help="with --widget: also show the system-tray icon "
-                        "(needs pystray + Pillow)")
+                   help="no longer needed: --widget always includes the "
+                        "tray icon (accepted for compatibility)")
     p.add_argument("--timeout", type=float, default=4.0)
     args = p.parse_args(argv)
 
     if args.once:
         return cmd_once(args)
     if args.widget:
-        run_widget(args)
-        return 0
+        return run_widget(args)
     run_tray(args)
     return 0
 
