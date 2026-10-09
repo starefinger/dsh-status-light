@@ -135,6 +135,18 @@ loopback bind the socket already restricts access. Stream clients are capped
 (default 8) — extra connections get 503. The bridge is a **soft** dependency:
 a non-web composition (no `agents` / `webServer`) simply never starts it.
 
+**How it mounts (v0.5.1).** The bridge runs as a nested plugin whose
+`inject` declares `agents` + `webServer`, so Cordis activates it only in a
+composition that provides both — and silently skips every other one. This
+matters because a plain `ctx.get("agents")` lookup returns `undefined` for a
+service the plugin has *not* declared in `inject` (the Cordis resolution
+model: property reads require the declaration; undeclared lookups resolve to
+nothing). The v0.5.0 code read both services that way, so its guard
+early-returned and the route never mounted on any boot — fixed by the
+nested-plugin wiring. The `session-status` settings namespace is registered
+inside the same fiber (single owner; the settings service rejects duplicate
+registrations).
+
 **Enable / disable.** Toggle it from **Settings → 状态监控 → 桌面状态桥**
 (persisted as `bridgeEnabled`, hot-reloaded by the settings watcher). The
 endpoint appears/disappears immediately; the host half still loads once at
