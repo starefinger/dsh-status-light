@@ -1,8 +1,9 @@
 # dsh-session-status
 
 DeepSeek Harness Web GUI plugin: a persistent red/yellow/green status dot in the
-sidebar footer that shows, at a glance, whether DSH has a process waiting on a
-human, a process running, or nothing going on.
+sidebar footer, plus an emoji-prefixed browser-tab title and a matching colored
+favicon, showing at a glance whether DSH has a process waiting on a human, a
+process running, or nothing going on.
 
 | Color | Meaning | Condition |
 | --- | --- | --- |
@@ -15,23 +16,41 @@ an approval shows red.
 
 ## Data source (zero extra dependencies)
 
-Reads only two standard client render props (no RPC, no added deps):
+Reads only two standard client stores (no RPC, no added deps):
 
-- `useSessions` → `byId[sessionId].running` (the host agent-running bit, kept live
-  by `api-session/status` frames).
-- `useSessionPendingInteraction` → `ReadonlyMap<SessionId, interaction>` (the set
-  of sessions awaiting a human, registered by `dsh-client-ui-approval` /
-  `dsh-client-ui-user-questions` into the `uiSession` pending-interaction domain).
+- `sessions.list` (`SnapshotStore<SessionListState>`) →
+  `byId[sessionId].running` (the host agent-running bit, kept live by
+  `api-session/status` frames). The sidebar dot reads it through the
+  `useSessions` hook; the tab title subscribes to the same store directly.
+- `uiSession.pendingInteractions` (a `{getSnapshot, subscribe}` store written by
+  `dsh-client-ui-approval` / `dsh-client-ui-user-questions`) → the set of sessions
+  awaiting a human. `map.size > 0` means blocked.
 
 The status is **global** across all sessions, and stays visible even with no
 session selected.
 
 ## Placement
 
-Registers into `sidebar.footer.action` (a root-scoped, always-visible list slot at
-the sidebar foot, beside Settings / the Cordis panel; visible even when the
-sidebar collapses to the 56px rail). Uses a fresh `id: "session-status"`, so it is
-purely additive and shadows no shipped UI.
+**Sidebar** — registers into `sidebar.footer.action` (a root-scoped,
+always-visible list slot at the sidebar foot, beside Settings / the Cordis panel;
+visible even when the sidebar collapses to the 56px rail). Uses a fresh
+`id: "session-status"`, so it is purely additive and shadows no shipped UI.
+
+**Browser tab** (v0.2.0) — for the lifetime of the plugin it takes over
+`document.title` and the favicon:
+
+- title gets an emoji prefix: `🔴 / 🟡 / 🟢 DeepSeek Harness` (tab title text
+  can't be colored, so the emoji carries the color);
+- the favicon swaps to a solid dot of the matching color (an inline SVG data
+  URI — no network, no build). This is the genuinely *colored* part of the tab,
+  and it shows in the OS taskbar/dock too.
+
+Implementation note: it subscribes to the **same** two standard stores the
+sidebar dot reads (no React, no polling), so the two never disagree; the
+`ctx.effect` disposer unsubscribes and **restores the original title and
+favicon** on plugin disposal / HMR swap. The web shell itself never writes
+`document.title` (the `index.html` title is static), so there is no ownership
+conflict; each browser tab updates its own title independently.
 
 ## Layout
 
