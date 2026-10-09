@@ -1,4 +1,4 @@
-// Simulation test for dsh-session-status v0.4.0 (sidebar dot + two-mode tab
+// Simulation test for dsh-session-status v0.4.1 (sidebar dot + two-mode tab
 // favicon + dedicated Settings → 状态监控 section backed by the session-status
 // settings namespace). Runs the REAL lib/client.js bundle in a VM with a fake
 // document/window/react/stores plus a fake settingsScope + locale + remote.
@@ -141,9 +141,10 @@ assert.strictEqual(typeof sectionReg.options.label, "function", "section provide
 assert.strictEqual(sectionReg.options.label(), "状态监控", "nav label resolves to 状态监控 (zh)");
 
 // ── helpers ───────────────────────────────────────────────────────────────
-const dot = (out) => out.props.children.props["data-state"];
+const dot = (out) => out.props.children.find((n) => n.props && n.props.className === "dss_dot").props["data-state"];
+const label = (out) => { const l = out.props.children.filter(Boolean).find((n) => n.props && n.props.className === "dss_label"); return l ? l.props.children : null; };
 const state = (out) => out.props["data-dss-state"];
-const sidebarProps = () => ({ useSessions: (s) => s(listStore.value), useSessionPendingInteraction: (s) => s(pendingStore.value) });
+const sidebarProps = (wide) => ({ wide, useSessions: (s) => s(listStore.value), useSessionPendingInteraction: (s) => s(pendingStore.value) });
 function decodedSvg(href) { return decodeURIComponent(href.slice("data:image/svg+xml,".length)); }
 const t = (key) => registeredDictionaries[sectionReg.options.locale].zh[key];
 function sectionProps() {
@@ -188,7 +189,10 @@ assert.strictEqual(fakeDoc.title, "DeepSeek Harness", "title must stay untouched
 let svg = decodedSvg(iconLink.href);
 assert.ok(svg.includes("fill=\"#22c55e\""), "initial favicon should be green");
 assert.ok(!svg.includes("<path"), "replace mode must NOT embed the logo path");
-assert.strictEqual(state(sidebarComp(sidebarProps())), "idle");
+const idleOut = sidebarComp(sidebarProps(true));
+assert.strictEqual(state(idleOut), "idle");
+assert.strictEqual(label(idleOut), "空闲", "wide sidebar shows the idle text");
+assert.strictEqual(dot(idleOut), "idle");
 
 // ── 2. list store change → running → yellow dot (replace) ─────────────────
 listStore.set({ ids: ["s1", "s2"], byId: { s1: { running: true }, s2: { running: false } } });
@@ -196,19 +200,25 @@ assert.strictEqual(fakeDoc.title, "DeepSeek Harness", "title still untouched whi
 svg = decodedSvg(iconLink.href);
 assert.ok(svg.includes("fill=\"#f59e0b\""), "favicon should be yellow");
 assert.ok(!svg.includes("<path"), "replace mode stays logo-free");
-assert.strictEqual(state(sidebarComp(sidebarProps())), "running");
+const runOut = sidebarComp(sidebarProps(true));
+assert.strictEqual(state(runOut), "running");
+assert.strictEqual(label(runOut), "运行中（1）", "wide sidebar shows the running text with count");
 
 // ── 3. pending store change → blocked → red dot (overrides running) ───────
 pendingStore.set(new Map([["s1", { kind: "question" }], ["s2", { kind: "approval" }]]));
 svg = decodedSvg(iconLink.href);
 assert.ok(svg.includes("fill=\"#ef4444\""), "favicon should be red");
-assert.strictEqual(state(sidebarComp(sidebarProps())), "blocked");
+const blockedOut = sidebarComp(sidebarProps(true));
+assert.strictEqual(state(blockedOut), "blocked");
+assert.strictEqual(label(blockedOut), "需人工处理（2）", "wide sidebar shows the blocked text with count");
+assert.strictEqual(blockedOut.props.title.length > 0, true, "detailed tooltip still present");
 
 // ── 4. back to idle → green again ─────────────────────────────────────────
 pendingStore.set(new Map());
 listStore.set({ ids: ["s1", "s2"], byId: { s1: { running: false }, s2: { running: false } } });
 svg = decodedSvg(iconLink.href);
 assert.ok(svg.includes("fill=\"#22c55e\""), "favicon should be green again");
+assert.strictEqual(label(sidebarComp(sidebarProps(true))), "空闲", "text back to idle");
 
 // ── 5. no duplicate favicon writes on no-op state (replace) ───────────────
 let writes = 0;
@@ -267,6 +277,12 @@ assert.ok(!svg.includes("<path"), "replace mode drops the logo path");
 assert.ok(svg.includes("fill=\"#f59e0b\""), "replace mode keeps the running/yellow color");
 assert.strictEqual(fakeScope.getSnapshot().value.iconMode, "replace", "mode persisted back to replace");
 
+// ── 9b. collapsed rail: no text label, compact pill (bare dot as before) ──
+const collapsedOut = sidebarComp(sidebarProps(false));
+assert.strictEqual(label(collapsedOut), null, "collapsed rail shows no text");
+assert.ok(collapsedOut.props.className.includes("dss_rootCompact"), "collapsed rail uses the compact (no-padding) pill");
+assert.strictEqual(dot(collapsedOut), "running", "dot still present in the collapsed rail");
+
 // ── 10. dispose: restore favicon, drop list/pending/scope subscriptions ───
 for (const c of effectCleanups.reverse()) c();
 assert.strictEqual(fakeDoc.title, "DeepSeek Harness", "title was never modified");
@@ -295,15 +311,15 @@ assert.strictEqual(scopelessCtx._registers["settings.section"], undefined, "no s
 // The core indicator (sidebar dot + favicon) is still registered and functional.
 assert.ok(scopelessCtx._registers["sidebar.footer.action"], "sidebar dot still registered without settings base");
 const scopelessSidebar = scopelessCtx._injections["sidebar.footer.action"]();
-assert.strictEqual(state(scopelessSidebar({ useSessions: (s) => s(listStore.value), useSessionPendingInteraction: (s) => s(pendingStore.value) })), "running");
+assert.strictEqual(state(scopelessSidebar({ wide: true, useSessions: (s) => s(listStore.value), useSessionPendingInteraction: (s) => s(pendingStore.value) })), "running");
 assert.ok(decodedSvg(iconLink.href).includes("fill=\"#f59e0b\""), "favicon still tracks state without settings base (replace default)");
 // dispose the extra effect
 for (const c of effectCleanups.reverse()) c();
 
 console.log("PASS 1/11 initial prime: green plain-dot favicon (replace), title untouched");
-console.log("PASS 2/11 list change → yellow plain dot (replace), title untouched");
-console.log("PASS 3/11 pending change → red plain dot (overrides running)");
-console.log("PASS 4/11 back to idle → green plain dot restored");
+console.log("PASS 2/11 list change → yellow plain dot (replace), title untouched, text 运行中（1）");
+console.log("PASS 3/11 pending change → red plain dot (overrides running), text 需人工处理（2）");
+console.log("PASS 4/11 back to idle → green plain dot restored, text 空闲");
 console.log("PASS 5/11 no-op state changes do not re-write favicon");
 console.log("PASS 6/11 settings section (状态监控) renders; header + row; replace preselected");
 console.log("PASS 7/11 click combined → persisted write → composite favicon (logo + state dot)");
@@ -311,4 +327,4 @@ console.log("PASS 8/11 state change in combined mode recolors the overlaid dot")
 console.log("PASS 9/11 click replace → plain-dot favicon restored, mode persisted");
 console.log("PASS 10/11 dispose restores favicon and removes all subscriptions (incl. scope)");
 console.log("PASS 11/11 absent settings base: no section, but dot + favicon still work");
-console.log("ALL TAB-STATUS CHECKS PASSED (v0.4.0)");
+console.log("ALL TAB-STATUS CHECKS PASSED (v0.4.1)");

@@ -13,11 +13,14 @@ window.__ModuleLoader__.load({
     // shipped client-ui plugins). Colors use the DSW theme tokens with literal
     // fallbacks so they stay readable in both light and dark themes.
     var css = [
-      ".dss_root{position:relative;display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;flex:none}",
+      ".dss_root{position:relative;gap:6px;max-width:100%;display:inline-flex;align-items:center;justify-content:center;height:20px;padding:0 8px;border-radius:10px}",
       ".dss_dot{width:10px;height:10px;border-radius:50%;flex:none;box-shadow:0 0 0 2px rgba(127,127,127,0.12);transition:background-color .18s ease-out,box-shadow .18s ease-out}",
       ".dss_dot[data-state=blocked]{background:var(--dsw-alias-state-error-primary,#ef4444);box-shadow:0 0 0 3px color-mix(in srgb,var(--dsw-alias-state-error-primary,#ef4444) 22%,transparent)}",
       ".dss_dot[data-state=running]{background:var(--dsw-alias-state-warn-primary,#f59e0b);box-shadow:0 0 0 3px color-mix(in srgb,var(--dsw-alias-state-warn-primary,#f59e0b) 22%,transparent)}",
       ".dss_dot[data-state=idle]{background:var(--dsw-alias-state-success-primary,#22c55e);box-shadow:0 0 0 2px color-mix(in srgb,var(--dsw-alias-state-success-primary,#22c55e) 18%,transparent)}",
+      ".dss_root:hover{background:var(--dsw-alias-interactive-bg-hover)}",
+      ".dss_rootCompact{padding:0}",
+      ".dss_label{color:var(--dsw-alias-label-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:12px;line-height:18px;min-width:0}",
       ".dss_row{border-bottom:.5px solid var(--dsw-alias-border-l2);align-items:center;gap:8px;padding:16px 0;display:flex}",
       ".dss_rowText{flex-direction:column;flex:1;gap:4px;min-width:0;padding-right:48px;display:flex}",
       ".dss_title{color:var(--dsw-alias-label-primary);font-size:14px;font-weight:400;line-height:22px}",
@@ -64,6 +67,12 @@ window.__ModuleLoader__.load({
         if (row && row.running) running++;
       }
       return { state: toState(blocked, running), blocked: blocked, running: running };
+    }
+    // Short label for the sidebar chip (12px) and the detailed tooltip.
+    function labelFor(state, blocked, running) {
+      if (state === "blocked") return "需人工处理" + (blocked ? "（" + blocked + "）" : "");
+      if (state === "running") return "运行中" + (running ? "（" + running + "）" : "");
+      return "空闲";
     }
     function titleFor(state, blocked, running) {
       if (state === "blocked") return "DSH 状态：需人工处理（" + blocked + " 个会话等待审批/回答）";
@@ -124,9 +133,14 @@ window.__ModuleLoader__.load({
     }
 
     // React component for the sidebar footer (root-scoped, always visible).
+    // The shell passes `wide` (sidebar expanded, or mid-transition) to every
+    // footer entry: show the state text as a chip when wide; in the 56px
+    // collapsed rail keep the bare dot (the title tooltip still carries the
+    // full state).
     function StatusIndicator(props) {
       var useSessions = props.useSessions;
       var useSessionPendingInteraction = props.useSessionPendingInteraction;
+      var wide = props.wide;
       var list = typeof useSessions === "function" ? useSessions(function (state) { return state; }) : void 0;
       var pending = typeof useSessionPendingInteraction === "function"
         ? useSessionPendingInteraction(function (snapshot) { return snapshot; })
@@ -134,12 +148,18 @@ window.__ModuleLoader__.load({
       var derived = deriveState(list, pending);
       var title = titleFor(derived.state, derived.blocked, derived.running);
       return react.createElement("span", {
-        "className": "dss_root",
+        "className": "dss_root" + (wide ? "" : " dss_rootCompact"),
         "role": "status",
         "aria-label": title,
         "title": title,
         "data-dss-state": derived.state,
-        "children": react.createElement("span", { "className": "dss_dot", "data-state": derived.state })
+        "children": [
+          react.createElement("span", { "className": "dss_dot", "data-state": derived.state }),
+          wide ? react.createElement("span", {
+            "className": "dss_label",
+            "children": labelFor(derived.state, derived.blocked, derived.running)
+          }) : null
+        ]
       });
     }
 

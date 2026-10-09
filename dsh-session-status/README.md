@@ -36,6 +36,12 @@ always-visible list slot at the sidebar foot, beside Settings / the Cordis panel
 visible even when the sidebar collapses to the 56px rail). Uses a fresh
 `id: "session-status"`, so it is purely additive and shadows no shipped UI.
 
+State text (v0.4.1): with the sidebar expanded, the dot is followed by the
+current state label — 需人工处理（N） / 运行中（N） / 空闲 — where N is the
+matching session count; a more detailed tooltip is always available on
+hover. In the 56px collapsed rail the chip shows the bare dot only (no padding,
+the original 20px look) so the label is never clipped.
+
 **Browser tab** (v0.2.0; favicon-only since v0.2.1; two configurable modes since
 v0.3.0) — for the lifetime of the plugin the favicon swaps to a status icon of the
 matching color (an inline SVG data URI — no network, no build). This is the
