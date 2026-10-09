@@ -34,7 +34,12 @@ window.__ModuleLoader__.load({
       ".dss_opt:hover:not(.dss_optOn){background:var(--dsw-alias-interactive-bg-hover)}",
       ".dss_optOn{background:var(--dsw-alias-bg-module-platform);border-color:var(--dsw-static-neutral-bluish-400,#93c5fd)}",
       ".dss_opt[disabled]{opacity:.5;cursor:default}",
-      ".dss_prev{width:22px;height:22px;flex:none;display:inline-block}"
+      ".dss_prev{width:22px;height:22px;flex:none;display:inline-block}",
+      ".dss_switch{box-sizing:border-box;background:var(--dsw-alias-bg-module-platform);border:.5px solid var(--dsw-alias-border-l4);width:44px;height:24px;border-radius:12px;position:relative;cursor:pointer;padding:0;flex:none;transition:background-color .15s ease-out,border-color .15s ease-out}",
+      ".dss_switchOn{background:var(--dsw-static-neutral-bluish-400,#93c5fd);border-color:var(--dsw-static-neutral-bluish-400,#93c5fd)}",
+      ".dss_switchKnob{background:var(--dsw-alias-label-primary);border-radius:50%;width:18px;height:18px;position:absolute;top:2px;left:2px;transition:transform .15s ease-out,background-color .15s ease-out}",
+      ".dss_switchOn .dss_switchKnob{transform:translateX(20px);background:#fff}",
+      ".dss_switch[disabled]{opacity:.5;cursor:default}"
     ].join("");
     var tagId = "dsh-session-status/StatusIndicator.css";
     if (typeof document !== "undefined" && document.querySelector('style[data-plugin-css="' + tagId + '"]') === null) {
@@ -180,15 +185,23 @@ window.__ModuleLoader__.load({
       var value = snap && snap.value && snap.value.iconMode;
       return MODES.indexOf(value) !== -1 ? value : "replace";
     }
+    // `bridgeEnabled` is a top-level boolean in the same namespace (the
+    // client scope writes single-level fields, so it is NOT nested).
+    function bridgeValue(scope) {
+      if (!scope || !scope.getSnapshot) return true;
+      var snap = scope.getSnapshot();
+      var v = snap && snap.value ? snap.value.bridgeEnabled : void 0;
+      return v === false ? false : true;
+    }
     // One string key per scope generation: "<status>:<mode>". A primitive
     // keeps useSyncExternalStore's equality check stable while still
     // re-rendering on a status transition (loading → ready) that carries no
     // value change.
     function scopeKey(scope) {
-      if (!scope || !scope.getSnapshot) return "none:replace";
+      if (!scope || !scope.getSnapshot) return "none:replace:on";
       var snap = scope.getSnapshot();
       var status = snap && snap.status ? snap.status : "none";
-      return status + ":" + modeValue(scope);
+      return status + ":" + modeValue(scope) + ":" + (bridgeValue(scope) ? "on" : "off");
     }
     function TabIconRow(props) {
       var t = props.t;
@@ -235,6 +248,42 @@ window.__ModuleLoader__.load({
       );
     }
 
+    // 桌面状态桥 toggle row: a single on/off switch on the top-level
+    // `bridgeEnabled` field. The switch reflects the persisted value
+    // (scope-driven, via the shared scopeKey), never the click echo.
+    function BridgeRow(props) {
+      var t = props.t;
+      var scope = props.tabIconScope;
+      var key = react.useSyncExternalStore(
+        function (cb) { return scope && scope.subscribe ? scope.subscribe(cb) : function () {}; },
+        function () { return scopeKey(scope); },
+        function () { return "none:replace:on"; }
+      );
+      var parts = key.split(":");
+      var available = parts[0] === "ready";
+      var on = parts[2] === "on";
+      return react.createElement("div", { "className": "dss_row" },
+        react.createElement("div", { "className": "dss_rowText" },
+          react.createElement("div", { "className": "dss_title" }, t("bridgeLabel")),
+          react.createElement("div", { "className": "dss_desc" }, t("bridgeDesc"))
+        ),
+        react.createElement("button", {
+          "type": "button",
+          "role": "switch",
+          "aria-checked": on,
+          "aria-label": t("bridgeLabel"),
+          "title": t("bridgeHint"),
+          "className": "dss_switch" + (on ? " dss_switchOn" : ""),
+          "disabled": !available,
+          "onClick": function () {
+            if (!available) return;
+            scope.set("bridgeEnabled", !on);
+          },
+          "children": react.createElement("span", { "className": "dss_switchKnob" })
+        })
+      );
+    }
+
     // The 状态监控 section content column: a header (page title + intro) plus
     // the tab-icon mode row. Mirrors the shipped General/Models sections — a
     // plain column div; the single row is rendered directly (no nested child
@@ -247,7 +296,8 @@ window.__ModuleLoader__.load({
           react.createElement("div", { "className": "dss_headTitle" }, t("sectionTitle")),
           react.createElement("div", { "className": "dss_headIntro" }, t("sectionIntro"))
         ),
-        react.createElement(TabIconRow, { t: t, tabIconScope: scope })
+        react.createElement(TabIconRow, { t: t, tabIconScope: scope }),
+        react.createElement(BridgeRow, { t: t, tabIconScope: scope })
       );
     }
 
@@ -338,7 +388,10 @@ window.__ModuleLoader__.load({
               "replace": "代替原图标",
               "combined": "与原图标共存",
               "replaceHint": "仅显示状态圆点，隐藏原图标",
-              "combinedHint": "保留原图标，右下角叠加状态圆点"
+              "combinedHint": "保留原图标，右下角叠加状态圆点",
+              "bridgeLabel": "桌面状态桥",
+              "bridgeDesc": "在正在运行的 web 服务器上挂载只读端点 /session-status，供桌面托盘工具读取红/黄/绿状态（不新增端口）",
+              "bridgeHint": "关闭后移除该端点（需重启 dsh web 或热重载后生效）"
             },
             en: {
               "nav": "Status monitoring",
@@ -348,7 +401,10 @@ window.__ModuleLoader__.load({
               "replace": "Replace the original icon",
               "combined": "Keep the original icon",
               "replaceHint": "Show the status dot only and hide the original icon",
-              "combinedHint": "Keep the original icon with the status dot overlaid"
+              "combinedHint": "Keep the original icon with the status dot overlaid",
+              "bridgeLabel": "Desktop status bridge",
+              "bridgeDesc": "Mounts a read-only /session-status endpoint on the running web server so a desktop tray tool can read the red/yellow/green state (no new port)",
+              "bridgeHint": "Turning this off removes the endpoint (applies on hot reload)"
             }
           });
         }, "dsh-session-status: settings section dictionaries");

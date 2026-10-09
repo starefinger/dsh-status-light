@@ -74,12 +74,57 @@ tooltip。侧栏折叠成 56px 窄轨时只显示圆点（保持原 20px 视觉�
 
 **设置面板独立页**（v0.4.0）：注册进 `settings.section`（与出厂的「通用 / 模型 / 插件」
 页同一槽位，左侧导航栏自动出现「状态监控」入口，未知 section id 回退到齿轮图标，
-**零壳改动**）。页面内容 = 页头（标题 + 说明）+「标签页图标」行；浏览器半用
-`ctx.get` 软访问 `locale` / `settingsScope`，缺席时整页不注册（核心指示灯不受影响）。
+**零壳改动**）。页面内容 = 页头（标题 + 说明）+「标签页图标」行 +（v0.5.0 起）
+「桌面状态桥」开关行（见下节）；浏览器半用 `ctx.get` 软访问 `locale` /
+`settingsScope`，缺席时整页不注册（核心指示灯不受影响）。两行同属
+`session-status` 命名空间；桥开关是**顶层**布尔字段 `bridgeEnabled`，
+客户端 scope 用单层 `set()` 即可写入。
 
 实现要点：favicon 逻辑直接订阅与侧栏灯**同一对**标准 store，无需轮询，两处
 状态必然一致；`ctx.effect` 的 disposer 在插件卸载 / HMR 重载时自动退订并
 **恢复原 favicon**。多个浏览器标签各自独立更新自己的 favicon。
+
+## 桌面状态桥（v0.5.0）
+
+此前指示灯只在浏览器里可见。桌面状态桥让一个**系统托盘小工具**（Windows /
+Linux / macOS）在没有浏览器的情况下，把同样的红/黄/绿显示到任务栏上。它复用
+你**正在运行**的 web 服务器——**不新增端口、不开 socket、不引入额外传输层**：
+宿主半在它上面挂两条**只读**路由。
+
+```
+GET /session-status         → 一次 JSON 快照，随后连接关闭
+GET /session-status/stream  → SSE：每次状态变化推一帧 + 15 秒保活
+```
+
+快照结构：
+
+```json
+{ "state": "running", "blocked": 0, "running": 2, "runningIds": ["a","b"], "ts": 1 }
+```
+
+`state` 与浏览器侧同一优先级 `红(阻塞) > 黄(运行) > 绿(空闲)`。两个数据源都在
+宿主侧，无需额外传输：
+
+- **running** —— 实时 `agents` 注册表，在 `agent/created` / `agent/disposed` /
+  `agent/status` 时重算（root 级监听器无 tag，作用域过滤器放行所有 agent 作用域）。
+- **blocked** —— 在途的人工请求计数，通过两条纯观测 waterfall tap 统计：
+  `approval/request`（工具审批 + 计划评审门）与 `user-questions/request`
+  （ask-user / 计划评审提问）。tap 进入时 +1、`finally` 里 -1，因此批准、
+  拒绝、中断都自动配平；多余的结算在 0 处钳制。
+
+**安全**：路由仅接受 GET（其余 405）；当 web 服务器绑定到回环之外时，只有
+回环来源可读（其余 403）；绑定回环时 socket 本身已限制访问。SSE 并发连接数
+有上限（默认 8，超出 503）。桥是**软依赖**：非 web 组合（无 `agents` /
+`webServer`）根本不会启动它。
+
+**开关**：在 **Settings → 状态监控 → 桌面状态桥** 切换（持久化为
+`bridgeEnabled`，由 settings watcher 热加载），端点即时出现/消失；宿主半仍
+只在 `dsh web` 启动时加载一次，因此新装需要重启一次。
+
+**托盘工具**位于 [`desktop/`](desktop/)——单个 `status_tray.py`
+（Python + pystray），流式读取 SSE 端点并给 🔴/🟡/🟢 托盘图标换色
+（桥不可达时显示 ⚪ 灰色）。运行方法见 [`desktop/README.md`](desktop/README.md)。
+桥的 Node 侧**零依赖**（纯内置模块）；Python 侧只需 pystray + Pillow。
 
 ## 文件结构
 
@@ -87,8 +132,10 @@ tooltip。侧栏折叠成 56px 窄轨时只显示圆点（保持原 20px 视觉�
 dsh-session-status/
 ├── package.json          # dsh.bundle.patch + dsh.client{platform:web}
 ├── cordis.patch.yml      # 主机侧 Loader 行（- insert: {id, name}）
+├── desktop/              # 可选托盘工具（Python）：status_tray.py + icons
 └── lib/
-    ├── index.js          # 主机半：注册 session-status 设置命名空间（零依赖 schema）
+    ├── index.js          # 主机半：settings 命名空间 + 桌面状态桥
+    ├── bridge.js         # 状态桥：StatusBridge 状态机 + HTTP/SSE 路由
     └── client.js         # 浏览器半：window.__ModuleLoader__.load(...) CJS 包
 ```
 

@@ -1,9 +1,13 @@
 # Baseline layer contributed by the dsh-session-status bundle.
 #
-# Adds one host Loader row. The host half registers the `session-status`
-# settings namespace (the tab-icon mode preference persisted in settings.yaml).
-# The package's `dsh.client` declaration is what makes the client-modules
-# scanner publish its browser half under /plugins and boot it in the GUI.
+# Adds one host Loader row. The host half (1) registers the `session-status`
+# settings namespace (the tab-icon mode + the desktop-bridge toggle, both
+# persisted in settings.yaml) and (2) mounts the read-only desktop status
+# bridge on the running web server: GET /session-status (snapshot) and
+# GET /session-status/stream (SSE), driven by the live `agents` registry and
+# the in-flight human-request waterfalls. The package's `dsh.client`
+# declaration is what makes the client-modules scanner publish its browser
+# half under /plugins and boot it in the GUI.
 - insert:
     - id: session-status
       name: dsh-session-status

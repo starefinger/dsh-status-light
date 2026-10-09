@@ -1,4 +1,4 @@
-// Simulation test for dsh-session-status v0.4.1 (sidebar dot + two-mode tab
+// Simulation test for dsh-session-status v0.5.0 (sidebar dot + two-mode tab
 // favicon + dedicated Settings → 状态监控 section backed by the session-status
 // settings namespace). Runs the REAL lib/client.js bundle in a VM with a fake
 // document/window/react/stores plus a fake settingsScope + locale + remote.
@@ -183,6 +183,19 @@ function classNameOf(out, cls) {
   })(out);
   return found;
 }
+function switchOf(out) {
+  // The bridge toggle is the single role="switch" button in the section.
+  const found = [];
+  (function walk(node) {
+    if (!node || typeof node !== "object") return;
+    if (typeof node.type === "function") { walk(render(node)); return; }
+    if (node.type === "button" && node.props && node.props.role === "switch") found.push(node);
+    const kids = node.props && node.props.children;
+    if (Array.isArray(kids)) kids.forEach(walk);
+    else if (kids) walk(kids);
+  })(out);
+  return found[0];
+}
 
 // ── 1. initial prime: idle + replace → plain green dot favicon ───────────
 assert.strictEqual(fakeDoc.title, "DeepSeek Harness", "title must stay untouched");
@@ -248,6 +261,22 @@ assert.strictEqual(replaceBtn.props["aria-pressed"], true, "replace preselected 
 assert.strictEqual(combinedBtn.props["aria-pressed"], false, "combined not selected in replace mode");
 assert.strictEqual(replaceBtn.props.disabled, false, "row enabled while scope is ready");
 assert.ok(replaceBtn.props.title && replaceBtn.props.title.length > 0, "options carry a hint title");
+
+// ── 6b. desktop status bridge toggle row renders + toggles ──────────────
+let sw = switchOf(sectionOut);
+assert.ok(sw, "section renders the desktop status bridge switch");
+assert.strictEqual(sw.props["aria-checked"], true, "bridge on by default");
+assert.strictEqual(sw.props.disabled, false, "switch enabled while scope is ready");
+assert.ok(sw.props.className.includes("dss_switchOn"), "switch shows the on style");
+assert.ok(classNameOf(sectionOut, "dss_title").some((n) => n.props.children === t("bridgeLabel")), "bridge row has its title label");
+sw.props.onClick();
+assert.strictEqual(fakeScope.getSnapshot().value.bridgeEnabled, false, "toggle write persisted to the scope");
+sectionOut = sectionComp(sectionProps());
+sw = switchOf(sectionOut);
+assert.strictEqual(sw.props["aria-checked"], false, "switch reflects the persisted off state");
+assert.ok(!sw.props.className.includes("dss_switchOn"), "switch off style applied");
+sw.props.onClick();
+assert.strictEqual(fakeScope.getSnapshot().value.bridgeEnabled, true, "toggle back restores the on state");
 
 // ── 7. click "combined" → persisted write → composite favicon (logo + dot) ─
 combinedBtn.props.onClick();
@@ -316,15 +345,15 @@ assert.ok(decodedSvg(iconLink.href).includes("fill=\"#f59e0b\""), "favicon still
 // dispose the extra effect
 for (const c of effectCleanups.reverse()) c();
 
-console.log("PASS 1/11 initial prime: green plain-dot favicon (replace), title untouched");
-console.log("PASS 2/11 list change → yellow plain dot (replace), title untouched, text 运行中（1）");
-console.log("PASS 3/11 pending change → red plain dot (overrides running), text 需人工处理（2）");
-console.log("PASS 4/11 back to idle → green plain dot restored, text 空闲");
-console.log("PASS 5/11 no-op state changes do not re-write favicon");
-console.log("PASS 6/11 settings section (状态监控) renders; header + row; replace preselected");
-console.log("PASS 7/11 click combined → persisted write → composite favicon (logo + state dot)");
-console.log("PASS 8/11 state change in combined mode recolors the overlaid dot");
-console.log("PASS 9/11 click replace → plain-dot favicon restored, mode persisted");
-console.log("PASS 10/11 dispose restores favicon and removes all subscriptions (incl. scope)");
-console.log("PASS 11/11 absent settings base: no section, but dot + favicon still work");
-console.log("ALL TAB-STATUS CHECKS PASSED (v0.4.1)");
+console.log("PASS 1/12 initial prime: green plain-dot favicon (replace), title untouched");
+console.log("PASS 2/12 list change → yellow plain dot (replace), title untouched, text 运行中（1）");
+console.log("PASS 3/12 pending change → red plain dot (overrides running), text 需人工处理（2）");
+console.log("PASS 4/12 back to idle → green plain dot restored, text 空闲");
+console.log("PASS 5/12 no-op state changes do not re-write favicon");
+console.log("PASS 6/12 settings section (状态监控) renders; header + row; replace preselected");
+console.log("PASS 7/12 click combined → persisted write → composite favicon (logo + state dot)");
+console.log("PASS 8/12 state change in combined mode recolors the overlaid dot");
+console.log("PASS 9/12 click replace → plain-dot favicon restored, mode persisted");
+console.log("PASS 10/12 dispose restores favicon and removes all subscriptions (incl. scope)");
+console.log("PASS 11/12 absent settings base: no section, but dot + favicon still work");
+console.log("ALL TAB-STATUS CHECKS PASSED (v0.5.0)");

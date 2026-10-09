@@ -83,11 +83,14 @@ modes:
 
 **Dedicated settings page** (v0.4.0): the plugin registers into `settings.section`
 — the same seat the shipped General / Models / Plugins pages use — so the nav rail
-shows a **Status monitoring** entry with **zero shell changes** (an unknown
+shows a **Status monitoring** (状态监控) entry with **zero shell changes** (an unknown
 section id falls back to the gear glyph). The page content is a header (title +
-intro) plus the tab-icon row; the browser half reaches `locale` /
+intro) plus the **tab-icon row** and, since v0.5.0, a **desktop status bridge**
+toggle row (see below); the browser half reaches `locale` /
 `settingsScope` through `ctx.get` (soft access), so a composition without them
-simply has no page.
+simply has no page. Both rows live in the same `session-status` namespace; the
+bridge field is a top-level `bridgeEnabled` boolean so the client scope can
+write it with its single-level `set()`.
 
 Implementation note: the favicon logic subscribes to the **same** two standard
 stores the sidebar dot reads (no React, no polling), so the two never disagree;
@@ -95,14 +98,65 @@ the `ctx.effect` disposer unsubscribes and **restores the original favicon** on
 plugin disposal / HMR swap; each browser tab updates its own favicon
 independently.
 
+## Desktop status bridge (v0.5.0)
+
+The indicator so far only shows in the browser. The desktop bridge lets a
+**system-tray tool** (Windows / Linux / macOS) show the same red / yellow /
+green on your taskbar without a browser. It reuses the web server you are
+**already** running — **no new port, no socket, no extra transport**: the host
+half mounts two **read-only** routes on it.
+
+```
+GET /session-status         → one JSON snapshot, then the connection closes
+GET /session-status/stream  → SSE: a frame per state change + 15 s keepalive
+```
+
+Snapshot shape:
+
+```json
+{ "state": "running", "blocked": 0, "running": 2, "runningIds": ["a","b"], "ts": 1 }
+```
+
+`state` uses the same `blocked > running > idle` precedence. The two data
+sources are host-side and need no extra transport:
+
+- **running** — the live `agents` registry, recomputed on `agent/created` /
+  `agent/disposed` / `agent/status` (a root-level listener is untagged, so the
+  scope filter admits it for every agent scope).
+- **blocked** — human requests in flight, counted through two pure-observation
+  waterfall taps on `approval/request` (tool approvals + plan-review gates) and
+  `user-questions/request` (ask-user / plan-review questions). A tap
+  increments on entry and decrements in a `finally`, so answers, rejections,
+  and aborts all self-balance; a stray settle clamps at 0.
+
+**Safety.** The route is GET-only (405 otherwise) and, when the web server
+binds beyond loopback, only loopback sources may read it (403 otherwise); on a
+loopback bind the socket already restricts access. Stream clients are capped
+(default 8) — extra connections get 503. The bridge is a **soft** dependency:
+a non-web composition (no `agents` / `webServer`) simply never starts it.
+
+**Enable / disable.** Toggle it from **Settings → 状态监控 → 桌面状态桥**
+(persisted as `bridgeEnabled`, hot-reloaded by the settings watcher). The
+endpoint appears/disappears immediately; the host half still loads once at
+`dsh web` boot, so a fresh install needs a restart.
+
+**The tray tool** lives in [`desktop/`](desktop/) — a single
+`status_tray.py` (Python + pystray) that streams the SSE endpoint and recolors
+a 🔴/🟡/🟢 tray icon (⚪ gray when the bridge is unreachable). See
+[`desktop/README.md`](desktop/README.md) to run it. The Node side of the bridge
+has **zero dependencies** (built-ins only); the Python side needs only pystray
++ Pillow.
+
 ## Layout
 
 ```
 dsh-session-status/
 ├── package.json          # dsh.bundle.patch + dsh.client{platform:web}
 ├── cordis.patch.yml      # host Loader row (- insert: {id, name})
+├── desktop/              # optional tray tool (Python): status_tray.py + icons
 └── lib/
-    ├── index.js          # host half: registers the session-status settings namespace (zero-dep schema)
+    ├── index.js          # host half: settings namespace + the desktop status bridge
+    ├── bridge.js         # the bridge: StatusBridge state machine + the HTTP/SSE route
     └── client.js         # browser half: window.__ModuleLoader__.load(...) CJS bundle
 ```
 
