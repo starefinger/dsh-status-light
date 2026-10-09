@@ -121,9 +121,12 @@ GET /session-status/stream  → SSE：每次状态变化推一帧 + 15 秒保活
 `bridgeEnabled`，由 settings watcher 热加载），端点即时出现/消失；宿主半仍
 只在 `dsh web` 启动时加载一次，因此新装需要重启一次。
 
-**托盘工具**位于 [`desktop/`](desktop/)——单个 `status_tray.py`
-（Python + pystray），流式读取 SSE 端点并给 🔴/🟡/🟢 托盘图标换色
-（桥不可达时显示 ⚪ 灰色）。运行方法见 [`desktop/README.md`](desktop/README.md)。
+**托盘工具**位于本插件**之外**——仓库根目录的 [`../desktop/`](../desktop/)
+（所有桌面版本的统一目录，Python 版在
+[`../desktop/desktop-python/`](../desktop/desktop-python/)）——单个
+`status_tray.py`（Python + pystray），流式读取 SSE 端点并给 🔴/🟡/🟢 托盘图标
+换色（桥不可达时显示 ⚪ 灰色）。运行方法见
+[`../desktop/desktop-python/README.md`](../desktop/desktop-python/README.md)。
 桥的 Node 侧**零依赖**（纯内置模块）；Python 侧只需 pystray + Pillow。
 
 ## 文件结构
@@ -132,7 +135,6 @@ GET /session-status/stream  → SSE：每次状态变化推一帧 + 15 秒保活
 dsh-session-status/
 ├── package.json          # dsh.bundle.patch + dsh.client{platform:web}
 ├── cordis.patch.yml      # 主机侧 Loader 行（- insert: {id, name}）
-├── desktop/              # 可选托盘工具（Python）：status_tray.py + icons
 └── lib/
     ├── index.js          # 主机半：settings 命名空间 + 桌面状态桥
     ├── bridge.js         # 状态桥：StatusBridge 状态机 + HTTP/SSE 路由

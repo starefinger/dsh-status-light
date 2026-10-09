@@ -140,12 +140,14 @@ a non-web composition (no `agents` / `webServer`) simply never starts it.
 endpoint appears/disappears immediately; the host half still loads once at
 `dsh web` boot, so a fresh install needs a restart.
 
-**The tray tool** lives in [`desktop/`](desktop/) — a single
+**The tray tool** lives **outside** this plugin, at the repo's
+[`../desktop/`](../desktop/) (a home for all desktop versions; the Python one
+is [`../desktop/desktop-python/`](../desktop/desktop-python/)) — a single
 `status_tray.py` (Python + pystray) that streams the SSE endpoint and recolors
 a 🔴/🟡/🟢 tray icon (⚪ gray when the bridge is unreachable). See
-[`desktop/README.md`](desktop/README.md) to run it. The Node side of the bridge
-has **zero dependencies** (built-ins only); the Python side needs only pystray
-+ Pillow.
+[`../desktop/desktop-python/README.md`](../desktop/desktop-python/README.md) to
+run it. The Node side of the bridge has **zero dependencies** (built-ins only);
+the Python side needs only pystray + Pillow.
 
 ## Layout
 
@@ -153,7 +155,6 @@ has **zero dependencies** (built-ins only); the Python side needs only pystray
 dsh-session-status/
 ├── package.json          # dsh.bundle.patch + dsh.client{platform:web}
 ├── cordis.patch.yml      # host Loader row (- insert: {id, name})
-├── desktop/              # optional tray tool (Python): status_tray.py + icons
 └── lib/
     ├── index.js          # host half: settings namespace + the desktop status bridge
     ├── bridge.js         # the bridge: StatusBridge state machine + the HTTP/SSE route
