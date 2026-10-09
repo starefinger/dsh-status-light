@@ -581,23 +581,7 @@ def run_widget(args):
     handle.bind("<B1-Motion>", _resize_move)
     handle.bind("<ButtonRelease-1>", _resize_end)
 
-    # --- pin / reset / quit ---
-    menu = tk.Menu(root, tearoff=0)
-    menu.add_command(
-        label=("取消置顶 / Unpin" if pinned_box[0]
-               else "固定在最前 / Pin on top"),
-        command=_toggle_pin)
-    menu.add_command(label="重置位置与大小 / Reset", command=_reset_position)
-    menu.add_separator()
-    def _quit_all(_e=None):
-        _persist()
-        client.stop()
-        if tray_icon is not None:
-            _stop_tray(tray_icon)
-        root.destroy()
-
-    menu.add_command(label="退出 / Quit", command=_quit_all)
-
+    # --- pin / reset / quit (defined BEFORE the menu references them) ---
     def _toggle_pin(_e=None):
         pinned_box[0] = not pinned_box[0]
         root.attributes("-topmost", pinned_box[0])
@@ -609,6 +593,22 @@ def run_widget(args):
             icon.stop()
         except Exception:
             pass
+
+    def _quit_all(_e=None):
+        _persist()
+        client.stop()
+        if tray_icon is not None:
+            _stop_tray(tray_icon)
+        root.destroy()
+
+    menu = tk.Menu(root, tearoff=0)
+    menu.add_command(
+        label=("取消置顶 / Unpin" if pinned_box[0]
+               else "固定在最前 / Pin on top"),
+        command=_toggle_pin)
+    menu.add_command(label="重置位置与大小 / Reset", command=_reset_position)
+    menu.add_separator()
+    menu.add_command(label="退出 / Quit", command=_quit_all)
 
     for w in (frame, label, dot):
         w.bind("<ButtonPress-1>", _drag_start)
