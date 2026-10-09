@@ -52,13 +52,24 @@ hidden-icons overflow (the `^` chevron by the clock).
 
 ### Widget mode (`--widget`)
 
-A small frameless **pill docked to the bottom-right corner that stays above
-every other window** (`-topmost` → `WS_EX_TOPMOST`). Built with **tkinter —
-part of the Python standard library, zero extra dependencies**. Double-click
-toggles pin/unpin; right-click gives **固定在最前 / 退出**. The pill is
-persistent (no hide mode) so the status is always visible; quit from the
-right-click menu to remove it. Both modes share the same SSE client, so
-transport, keepalive, and the gray-unreachable fallback behave identically.
+A small frameless **pill that floats above every other window**
+(`-topmost` → `WS_EX_TOPMOST`). Built with **tkinter — part of the Python
+standard library, zero extra dependencies**. It opens docked to the
+bottom-right corner; everything else is user-adjustable:
+
+| 调整 | 操作 |
+| --- | --- |
+| **位置** | 按住药丸任意处拖动 |
+| **大小** | 拖动右下角的小方块手柄(范围 120×30 … 720×240) |
+| **最前** | 双击切换置顶/取消,或右键菜单 `固定在最前 / 取消置顶` |
+| **复位** | 右键菜单 `重置位置与大小 / Reset` |
+| **退出** | 右键菜单 `退出 / Quit` |
+
+位置、大小和置顶状态**自动记忆**到
+`~/.dsh_session_status_widget.json`,重启后原样恢复;若保存的位置已不在
+屏幕上(换显示器等),自动回到右下角默认位。药丸是常驻的(无隐藏模式),
+状态永远可见;右键退出即可移除。两种模式共用同一个 SSE 客户端,传输、
+keepalive 与灰色"无法连接"回退行为完全一致。
 
 ## How it connects
 

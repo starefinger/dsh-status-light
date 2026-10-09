@@ -63,6 +63,69 @@ STATE_COLOR = {
 }
 PILL_BG = "#111827"
 PILL_FG = "#f9fafb"
+
+# ── widget geometry (user-adjustable, persisted) ─────────────────────────
+WIDGET_MIN_W = 120
+WIDGET_MIN_H = 30
+WIDGET_MAX_W = 720
+WIDGET_MAX_H = 240
+WIDGET_HANDLE = 12  # bottom-right resize hit area, px
+WIDGET_STATE_FILE = os.path.join(
+    os.path.expanduser("~"), ".dsh_session_status_widget.json")
+
+
+def _widget_load_state():
+    """Persisted {x, y, w, h, topmost}; None when missing or corrupt."""
+    try:
+        with open(WIDGET_STATE_FILE, encoding="utf-8") as f:
+            d = json.load(f)
+        return {
+            "x": int(d["x"]),
+            "y": int(d["y"]),
+            "w": int(d["w"]),
+            "h": int(d["h"]),
+            "topmost": bool(d.get("topmost", True)),
+        }
+    except Exception:
+        return None
+
+
+def _widget_save_state(x, y, w, h, topmost):
+    """Best-effort atomic write; a failure never breaks the pill."""
+    try:
+        tmp = WIDGET_STATE_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"x": int(x), "y": int(y), "w": int(w), "h": int(h),
+                       "topmost": bool(topmost)}, f)
+        os.replace(tmp, WIDGET_STATE_FILE)
+    except Exception:
+        pass
+
+
+def _widget_default_geometry(root):
+    """Fresh-install placement: bottom-right, offset clear of the tray
+    (anchored at 0,0 when the screen is smaller than the pill)."""
+    sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
+    pw = root.winfo_reqwidth()
+    ph = root.winfo_reqheight()
+    return pw, ph, max(0, sw - pw - 24), max(0, sh - ph - 40)
+
+
+def _widget_place(root, saved):
+    """Apply the persisted geometry clamped to the current screen; re-dock
+    when nothing is saved or it no longer fits (monitor removed, …)."""
+    sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
+    dw, dh, dx, dy = _widget_default_geometry(root)
+    if saved and not (saved["x"] > sw or saved["y"] > sh
+                      or saved["x"] + saved["w"] < 0
+                      or saved["y"] + saved["h"] < 0):
+        w = max(WIDGET_MIN_W, min(WIDGET_MAX_W, saved["w"]))
+        h = max(WIDGET_MIN_H, min(WIDGET_MAX_H, saved["h"]))
+        x = max(0, min(saved["x"], sw - w))
+        y = max(0, min(saved["y"], sh - h))
+    else:
+        w, h, x, y = dw, dh, dx, dy
+    root.geometry("%dx%d+%d+%d" % (w, h, x, y))
 # display order for the menu status line
 STATE_LABEL = {
     BLOCKED: "需人工处理 (blocked)",
@@ -349,15 +412,19 @@ def run_tray(args):
 def run_widget(args):
     """Always-on-top desktop pill (tkinter, stdlib only).
 
-    A small frameless capsule docked to the screen corner that stays above
-    every other window (WS_EX_TOPMOST via -topmost). The SAME StatusClient
-    feeds it, so transport/SSE/keepalive logic is shared with the tray.
+    A small frameless capsule that floats above every other window
+    (WS_EX_TOPMOST via -topmost). The SAME StatusClient feeds it, so
+    transport / SSE / keepalive logic is shared with the tray.
 
-    Interactions:
-      double-click  pin/unpin topmost
-      right-click   context menu (pin / quit)
-    The pill is intentionally persistent (no hide mode) so the status is
-    always visible; quit from the right-click menu to remove it.
+    User-adjustable — everything persists to
+    ~/.dsh_session_status_widget.json and survives restarts:
+      position  drag the pill body anywhere
+      size      drag the bottom-right corner handle
+                (clamped to WIDGET_MIN..MAX, 120x30 … 720x240)
+      topmost   double-click to pin/unpin, or the right-click menu
+    The right-click menu also resets position + size to the default
+    bottom-right dock. The pill is intentionally persistent (no hide
+    mode) so the status is always visible; quit via the menu to remove it.
     """
     import tkinter as tk
 
@@ -365,7 +432,6 @@ def run_widget(args):
     root = tk.Tk()
     root.title("dsh-session-status")
     root.overrideredirect(True)            # no title bar / taskbar entry
-    root.attributes("-topmost", True)     # stay above all windows
 
     state_var = tk.StringVar(value=TITLE[UNKNOWN])
     # pill: colored dot (oval) + label, dark capsule background
@@ -378,15 +444,16 @@ def run_widget(args):
     label = tk.Label(frame, textvariable=state_var, bg=PILL_BG, fg=PILL_FG,
                      font=("Segoe UI", 9, "bold"), anchor="w")
     label.place(x=28, y=6)
-    root.update_idletasks()
-    # dock bottom-right of the primary screen, offset from the tray
-    sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
-    pw, ph = root.winfo_reqwidth(), root.winfo_reqheight()
-    x = sw - pw - 24
-    y = sh - ph - 40
-    root.geometry("%dx%d+%d+%d" % (pw, ph, x, y))
+    # bottom-right resize handle (corner grip)
+    handle = tk.Frame(frame, width=WIDGET_HANDLE, height=WIDGET_HANDLE,
+                      bg=PILL_BG, cursor="sizing")
+    handle.place(relx=1.0, rely=1.0, anchor="se")
 
-    pinned_box = [True]   # mutable cell so paint/_toggle_pin share the flag
+    root.update_idletasks()
+    saved = _widget_load_state()
+    _widget_place(root, saved)
+    pinned_box = [bool(saved["topmost"]) if saved else True]
+    root.attributes("-topmost", pinned_box[0])
 
     def paint(st, snap):
         # called from the client thread -> marshal onto the tk thread
@@ -404,14 +471,66 @@ def run_widget(args):
 
     client.on_state = paint
     client.start()
+
+    def _persist():
+        _widget_save_state(root.winfo_x(), root.winfo_y(),
+                           root.winfo_width(), root.winfo_height(),
+                           pinned_box[0])
+
+    def _reset_position(_e=None):
+        w, h, x, y = _widget_default_geometry(root)
+        root.geometry("%dx%d+%d+%d" % (w, h, x, y))
+        _persist()
+
+    # --- drag the body to move ---
+    drag_box = [None]
+
+    def _drag_start(e):
+        drag_box[0] = (e.x_root - root.winfo_x(),
+                       e.y_root - root.winfo_y())
+
+    def _drag_move(e):
+        if drag_box[0]:
+            dx, dy = drag_box[0]
+            root.geometry("+%d+%d" % (e.x_root - dx, e.y_root - dy))
+
+    def _drag_end(_e=None):
+        if drag_box[0]:
+            drag_box[0] = None
+            _persist()
+
+    # --- drag the corner handle to resize ---
+    resize_box = [None]
+
+    def _resize_start(e):
+        resize_box[0] = (root.winfo_width(), root.winfo_height(),
+                         e.x_root, e.y_root)
+
+    def _resize_move(e):
+        if not resize_box[0]:
+            return
+        w0, h0, sx, sy = resize_box[0]
+        w = max(WIDGET_MIN_W, min(WIDGET_MAX_W, w0 + (e.x_root - sx)))
+        h = max(WIDGET_MIN_H, min(WIDGET_MAX_H, h0 + (e.y_root - sy)))
+        root.geometry("%dx%d" % (w, h))
+
+    def _resize_end(_e=None):
+        if resize_box[0]:
+            resize_box[0] = None
+            _persist()
+
+    handle.bind("<ButtonPress-1>", _resize_start)
+    handle.bind("<B1-Motion>", _resize_move)
+    handle.bind("<ButtonRelease-1>", _resize_end)
+
+    # --- pin / reset / quit ---
     menu = tk.Menu(root, tearoff=0)
     menu.add_command(label="固定在最前 / Pin on top", state="disabled")
+    menu.add_command(label="重置位置与大小 / Reset", command=_reset_position)
     menu.add_separator()
     menu.add_command(label="退出 / Quit",
-                     command=lambda: (client.stop(), root.destroy()))
-    frame.bind("<Button-3>", lambda e: menu.tk_popup(e.x_root, e.y_root))
-    label.bind("<Button-3>", lambda e: menu.tk_popup(e.x_root, e.y_root))
-    dot.bind("<Button-3>", lambda e: menu.tk_popup(e.x_root, e.y_root))
+                     command=lambda: (_persist(), client.stop(),
+                                      root.destroy()))
 
     def _toggle_pin(_e=None):
         pinned_box[0] = not pinned_box[0]
@@ -420,8 +539,14 @@ def run_widget(args):
                                    else "固定在最前 / Pin on top"))
 
     for w in (frame, label, dot):
+        w.bind("<ButtonPress-1>", _drag_start)
+        w.bind("<B1-Motion>", _drag_move)
+        w.bind("<ButtonRelease-1>", _drag_end)
         w.bind("<Double-Button-1>", _toggle_pin)
-    root.protocol("WM_DELETE_WINDOW", lambda: (client.stop(), root.destroy()))
+        w.bind("<Button-3>", lambda e: menu.tk_popup(e.x_root, e.y_root))
+
+    root.protocol("WM_DELETE_WINDOW",
+                  lambda: (_persist(), client.stop(), root.destroy()))
     try:
         root.mainloop()
     finally:
