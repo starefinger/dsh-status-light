@@ -1,4 +1,4 @@
-# Baseline layer contributed by the dsh-session-status bundle.
+# Baseline layer contributed by the dsh-status-light bundle.
 #
 # Adds one host Loader row. The host half (1) registers the `session-status`
 # settings namespace (the tab-icon mode + the desktop-bridge toggle, both
@@ -8,6 +8,11 @@
 # the in-flight human-request waterfalls. The package's `dsh.client`
 # declaration is what makes the client-modules scanner publish its browser
 # half under /plugins and boot it in the GUI.
+#
+# The package name is `dsh-status-light` because the npm name
+# `dsh-session-status` is already taken by an unrelated project; the loader
+# row id and the settings namespace stay `session-status` (the id is
+# arbitrary — the row must simply be unique within the composed tree).
 - insert:
     - id: session-status
-      name: dsh-session-status
+      name: dsh-status-light

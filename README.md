@@ -1,87 +1,109 @@
-# DSH 会话状态灯
+# DSH Session Status Light
 
-> 让 DSH 会话的处境**一眼可见**：它是在等你拍板、正在干活，还是完全闲着？
+[English](README.md) | [中文](README.zh.md)
 
-跑 DSH 会话时最烦的一件事是「我现在能不能走开？」——某个会话是不是卡在等你审批、
-提问或计划评审？还是有 Agent 正在跑？还是全停了？这个工具把答案做成一个
-**红 / 黄 / 绿**的小灯，常驻在你看得见的地方，不用点开会话翻。
+A global **red / yellow / green** status light for your DSH sessions — see at a
+glance whether some session is waiting on you, an agent is working, or
+everything is idle, without opening any session.
 
-## 三个颜色，一句话
+It answers the question that haunts everyone running DSH: *"can I step away
+right now?"* — is a session stuck on an approval, a question, or a plan
+review? Is an agent still running? Or has it all stopped?
 
-| 灯 | 意思 | 什么时候亮 |
-| --- | --- | --- |
-| 🔴 红 | **在等你** | 任意会话有待处理的人工操作（审批 / 提问 / 计划评审） |
-| 🟡 黄 | **在干活** | 没有卡住，但至少一个会话的 Agent 正在运行 |
-| 🟢 绿 | **闲着** | 既没卡住，也没人在跑 |
-| ⚪ 灰 | **连不上** | 桌面工具读不到 DSH（服务器没起 / 桥被关掉） |
+## How it looks
 
-判定优先级 **红 > 黄 > 绿**：一个会话既在跑又在等你时，按红显示——「需要人」
-永远优先于「只是在动」。状态是**全局**的，统计所有会话，不是只看当前打开的那个。
+| Light | Meaning | When |
+| :---: | --- | --- |
+| 🔴 | **Blocked — waiting on you** | any session has a pending human interaction (approval / question / plan review) |
+| 🟡 | **Running** | nothing blocked, but at least one session's agent is running |
+| 🟢 | **Idle** | nothing blocked, nothing running |
+| ⚪ | **Unreachable** | the desktop tool can't read DSH (server down / bridge disabled) |
 
-## 你在哪几个地方看到它
+Precedence is **red > yellow > green**: a session that is running *and* waiting
+on you shows red — "needs a human" always beats "just moving". The state is
+**global** across all sessions, not just the one currently open.
 
-同一套状态，渲染在你最常用的几个界面上：
+## Features
 
-1. **浏览器侧栏** —— Web GUI 侧栏底部常驻一个状态圆点，展开时旁边还有文字
-   （「需人工处理（2）」「运行中（1）」「空闲」）和悬停提示。
-2. **浏览器标签页** —— 标签页的小图标（favicon）跟着换色，切到别的标签、
-   甚至看任务栏/Dock 都能瞄到。
-3. **桌面** —— 一个**置顶小药丸**浮在屏幕角落 + 一个**系统托盘图标**，
-   没有浏览器、切到别的程序时也看得见。药丸可拖动、可缩放、可隐藏，
-   托盘是它被隐藏后唯一的找回入口。
+- 🌐 **Browser sidebar** — persistent status dot in the Web GUI sidebar footer;
+  expanded view adds a text label ("Needs human (2)", "Running (1)", "Idle")
+  and a hover tooltip
+- 🏷️ **Browser tab** — the tab favicon follows the state color, visible when
+  switching tabs or glancing at the taskbar / Dock
+- 🖥️ **Desktop** — an always-on-top pill in a screen corner + system tray
+  icon, visible without a browser; the pill is draggable, resizable, and
+  hideable, and the tray icon is the only way back after hiding
+- 🔌 **Single source of truth** — all surfaces read the same read-only bridge
+  endpoint mounted on the web server you already run: **no new port, no extra
+  resources**; the color always matches across surfaces
+- ⚙️ **Configurable** — tab-icon mode (replace favicon vs. overlay) and the
+  desktop bridge are toggled in **Settings → 状态监控** and persisted
 
-三者显示的是**同一个**状态，颜色规则完全一致。
+## Requirements
 
-## 快速开始
+- A running DSH web server (the plugin's host; the bridge is mounted by it)
+- Python 3.9+ for the desktop tool (`--once` / `--widget` modes are stdlib-only;
+  tray mode adds `pystray` + `Pillow`)
 
-**1. 浏览器侧栏 + 标签页（DSH 插件）**
+## Quick start
+
+### 1. Browser sidebar + tab (DSH plugin)
 
 ```sh
-dsh plugin --profile web add /path/to/dsh-session-status   # 安装
-dsh --profile web                                            # 重启后生效
+# from npm (published):
+dsh plugin --profile web add dsh-status-light
+# or from a local checkout (dev):
+dsh plugin --profile web add /path/to/dsh-session-status
+dsh --profile web           # effective after restart
 ```
 
-**2. 桌面药丸 + 托盘（Python 小工具）**
+### 2. Desktop pill + tray (Python tool)
 
 ```powershell
 cd desktop/desktop-python
-pip install -r requirements.txt      # 仅 pystray + Pillow
-python status_tray.py                # 默认就是「药丸 + 托盘」
+pip install -r requirements.txt      # only pystray + Pillow
+python status_tray.py                # default: pill + tray
 ```
 
-桌面工具读的是**你已经在跑的那个 web 服务器**上的一组只读接口——
-**不新开端口、不占资源**；读不到时自动降级为灰色。
+If the tool can't reach the server or the bridge is disabled, it degrades
+to grey automatically.
 
-## 它怎么连起来的（一句话）
+## How it works
 
-插件在 web 服务器上挂一个**只读的「状态桥」**，把「有没有会话卡住 / 在跑」
-汇成一个红黄绿快照；浏览器里的灯和桌面工具都从**这一个**地方取数。
-所以无论你在哪个界面看，颜色永远对得上。
+The plugin mounts a **read-only "status bridge"** on the web server that boils
+"blocked / running" across all sessions down into one red-yellow-green
+snapshot. The browser lights and the desktop tool both read from this single
+place, so every surface always agrees.
 
 ```
-              DSH web 服务器
+              DSH web server
               ┌─────────────────────────┐
-   会话/Agent ─▶  状态桥（只读，红黄绿）  │
+  sessions / ─▶  status bridge (read-   │
+  agents        only, R/Y/G snapshot)   │
               └───────────┬─────────────┘
                  ┌────────┼─────────┐
-            浏览器侧栏灯  标签页图标  桌面药丸 + 托盘
+          sidebar light   tab icon   desktop pill + tray
 ```
 
-## 目录
+## Repository structure
 
 ```
-dsh-session-status/     浏览器插件：侧栏状态灯 + 标签页图标 + 设置页 + 状态桥
-desktop/                桌面伴侣的统一目录（可放多个实现版本）
-  desktop-python/       Python 版：置顶药丸 + 系统托盘（当前唯一版本）
-test-*.mjs / .cjs       插件的测试
+dsh-session-status/     browser plugin (npm: dsh-status-light): sidebar light + tab favicon + settings page + status bridge
+desktop/                unified home for desktop companions (may hold several implementations)
+  desktop-python/       Python edition: always-on-top pill + system tray (current edition)
+test-*.mjs / .cjs       plugin tests
 ```
 
-## 细节文档
+## Documentation
 
-- 浏览器插件（状态规则、安装、设置、桥的接口与安全）：
-  [`dsh-session-status/README.zh.md`](dsh-session-status/README.zh.md) ·
-  [English](dsh-session-status/README.md)
-- 桌面工具（运行方式、药丸操作、连接行为）：
+- **Browser plugin** — status rules, install, settings, bridge API & security:
+  [`dsh-session-status/README.md`](dsh-session-status/README.md) ·
+  [中文](dsh-session-status/README.zh.md)
+- **Desktop tool** — how to run, pill interactions, connection behavior:
   [`desktop/desktop-python/README.md`](desktop/desktop-python/README.md)
-- 桌面版本总览（如何加新版本）：
+- **Desktop editions overview** — how to add a new implementation:
   [`desktop/README.md`](desktop/README.md)
+
+## License
+
+[MIT](LICENSE) © dsh-agent

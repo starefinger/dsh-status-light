@@ -1,4 +1,9 @@
-# dsh-session-status
+# dsh-status-light (dsh-session-status)
+
+> npm package: **`dsh-status-light`** · repo folder / local install path:
+> `dsh-session-status/` · settings namespace + loader row id: `session-status`.
+> The npm name `dsh-session-status` is taken by an unrelated project, so the
+> published package is `dsh-status-light`.
 
 DeepSeek Harness Web GUI plugin: a persistent red/yellow/green status dot in the
 sidebar footer, plus a matching colored browser-tab favicon (the title is left
@@ -152,19 +157,19 @@ registrations).
 endpoint appears/disappears immediately; the host half still loads once at
 `dsh web` boot, so a fresh install needs a restart.
 
-**The tray tool** lives **outside** this plugin, at the repo's
-[`../desktop/`](../desktop/) (a home for all desktop versions; the Python one
-is [`../desktop/desktop-python/`](../desktop/desktop-python/)) — a single
-`status_tray.py` (Python + pystray) that streams the SSE endpoint and recolors
-a 🔴/🟡/🟢 tray icon (⚪ gray when the bridge is unreachable). See
-[`../desktop/desktop-python/README.md`](../desktop/desktop-python/README.md) to
-run it. The Node side of the bridge has **zero dependencies** (built-ins only);
-the Python side needs only pystray + Pillow.
+**The tray tool** lives **outside** this plugin, in the source repo's `desktop/`
+folder (a home for all desktop versions; the Python one is
+`desktop/desktop-python/`) — a single `status_tray.py` (Python + pystray) that
+streams the SSE endpoint and recolors a 🔴/🟡/🟢 tray icon (⚪ gray when the
+bridge is unreachable). It is **not part of the npm package** — fetch it from
+the source repo and see its README to run it. The Node side of the bridge has
+**zero dependencies** (built-ins only); the Python side needs only pystray +
+Pillow.
 
 ## Layout
 
 ```
-dsh-session-status/
+dsh-session-status/          ← repo folder name (npm package: dsh-status-light)
 ├── package.json          # dsh.bundle.patch + dsh.client{platform:web}
 ├── cordis.patch.yml      # host Loader row (- insert: {id, name})
 └── lib/
@@ -180,12 +185,42 @@ plugins (no esbuild/tsdown build step); the only runtime module it requires is
 
 ## Install
 
+> `dsh plugin` is a thin pnpm forwarder: it runs `pnpm add <spec>` in your
+> profile directory (`$DSH_HOME/profiles/web`) and auto-appends the package to
+> `dsh.profile.bundles` when it declares `dsh.bundle` — wiring the host and
+> browser halves at once.
+
+### From npm (published)
+
+```sh
+dsh plugin --profile web add dsh-status-light
+```
+
+Pin a version (`dsh-status-light@0.5.1`) or use a custom registry
+(`add --registry <url> dsh-status-light`). To upgrade later:
+`dsh plugin --profile web update dsh-status-light`.
+
+### From git
+
+```sh
+dsh plugin --profile web add github:<owner>/dsh-session-status   # default branch
+dsh plugin --profile web add github:<owner>/dsh-session-status#v0.5.1
+```
+
+> If the repo ever adds a build `prepare` script, pnpm blocks install scripts
+> by default — `dsh plugin` prints the exact `allowBuilds` key to add to the
+> profile's `pnpm-workspace.yaml`; add it and re-run. (The published package
+> ships prebuilt: no build step, so this never fires for the npm install.)
+
+### From a local checkout (development)
+
 ```sh
 dsh plugin --profile web add /path/to/dsh-session-status
 ```
 
-Installs into the profile `node_modules` (as a `link:`) and auto-appends
-`dsh-session-status` to `dsh.profile.bundles` — wiring both halves at once.
+Installs into the profile `node_modules` (as a `link:`) — edit the repo, the
+profile picks it up on the next `dsh web` boot (HMR hot-swaps only the already
+known browser bundle; see Activation below).
 
 ## Activation (important)
 
@@ -200,8 +235,28 @@ dsh --profile web
 
 > Note: restarting ends any session currently running inside that web process.
 
+## Publishing
+
+The package is dependency-free and prebuilt (the browser bundle is hand
+authored), so publishing is a plain npm publish of the repo folder:
+
+```sh
+cd dsh-session-status
+npm publish --access public        # first publish: claim the name
+npm version patch && npm publish   # subsequent releases
+```
+
+`files` limits the tarball to `lib/`, `cordis.patch.yml`, and the two READMEs.
+The name is `dsh-status-light` because `dsh-session-status` is already taken
+on npm by an unrelated project.
+
 ## Uninstall
 
 ```sh
-dsh plugin --profile web remove dsh-session-status
+dsh plugin --profile web remove dsh-status-light   # npm / git install
+# (local-path installs: remove dsh-session-status, the folder's package name
+#  is irrelevant — the dependency is keyed by the resolved spec's package name)
 ```
+
+Removal is reconciled against installed state: the entry drops out of
+`dsh.profile.bundles` automatically.

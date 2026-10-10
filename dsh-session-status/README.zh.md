@@ -1,4 +1,8 @@
-# dsh-session-status
+# dsh-status-light（dsh-session-status）
+
+> npm 包名：**`dsh-status-light`** · 仓库目录 / 本地安装路径：`dsh-session-status/` ·
+> 设置命名空间 + Loader 行 id：`session-status`。npm 上的 `dsh-session-status`
+> 已被一个不相关的项目占用，所以发布包名为 `dsh-status-light`。
 
 DeepSeek Harness Web GUI 插件：在侧栏底部常驻一个红/黄/绿状态灯，并把浏览器
 标签页的 favicon 换成同色圆点（标题保持原生不变），一眼看出当前 DSH 是否有
@@ -130,18 +134,17 @@ settings 服务拒绝重复注册）。
 `bridgeEnabled`，由 settings watcher 热加载），端点即时出现/消失；宿主半仍
 只在 `dsh web` 启动时加载一次，因此新装需要重启一次。
 
-**托盘工具**位于本插件**之外**——仓库根目录的 [`../desktop/`](../desktop/)
-（所有桌面版本的统一目录，Python 版在
-[`../desktop/desktop-python/`](../desktop/desktop-python/)）——单个
+**托盘工具**位于本插件**之外**——源码仓库的 `desktop/` 目录（所有桌面版本的
+统一目录，Python 版在 `desktop/desktop-python/`）——单个
 `status_tray.py`（Python + pystray），流式读取 SSE 端点并给 🔴/🟡/🟢 托盘图标
-换色（桥不可达时显示 ⚪ 灰色）。运行方法见
-[`../desktop/desktop-python/README.md`](../desktop/desktop-python/README.md)。
-桥的 Node 侧**零依赖**（纯内置模块）；Python 侧只需 pystray + Pillow。
+换色（桥不可达时显示 ⚪ 灰色）。它**不在 npm 包内**——请从源码仓库获取，
+运行方法见其 README。桥的 Node 侧**零依赖**（纯内置模块）；
+Python 侧只需 pystray + Pillow。
 
 ## 文件结构
 
 ```
-dsh-session-status/
+dsh-session-status/          ← 仓库目录名（npm 包名：dsh-status-light）
 ├── package.json          # dsh.bundle.patch + dsh.client{platform:web}
 ├── cordis.patch.yml      # 主机侧 Loader 行（- insert: {id, name}）
 └── lib/
@@ -157,13 +160,39 @@ CSS 通过 `<style data-plugin>` 注入，配色用 DSW 主题 token
 
 ## 安装
 
+> `dsh plugin` 是 pnpm 的薄转发层：在你的 profile 目录
+> （`$DSH_HOME/profiles/web`）里执行 `pnpm add <spec>`，并在包声明
+> `dsh.bundle` 时自动追加进 `dsh.profile.bundles`——主机半与浏览器半一次接好。
+
+### 从 npm（已发布）
+
 ```sh
-# 在插件目录外（插件以 link 方式接入 profile 的 node_modules）：
+dsh plugin --profile web add dsh-status-light
+```
+
+可锁定版本（`dsh-status-light@0.5.1`），或指定私有 registry
+（`add --registry <url> dsh-status-light`）。升级：
+`dsh plugin --profile web update dsh-status-light`。
+
+### 从 git
+
+```sh
+dsh plugin --profile web add github:<owner>/dsh-session-status          # 默认分支
+dsh plugin --profile web add github:<owner>/dsh-session-status#v0.5.1   # 锁 tag
+```
+
+> 若仓库将来加入构建用的 `prepare` 脚本，pnpm 默认拦截依赖的安装脚本——
+> `dsh plugin` 会打印需要加入 profile `pnpm-workspace.yaml` 的 `allowBuilds`
+> key，加上后重跑即可。（npm 发布的包是预构建的，无构建步骤，不会触发。）
+
+### 从本地 checkout（开发）
+
+```sh
 dsh plugin --profile web add /path/to/dsh-session-status
 ```
 
-该命令会通过 pnpm 把插件装进 profile 的 `node_modules`，并自动把
-`dsh-session-status` 追加进 `dsh.profile.bundles`（主机半与浏览器半一次接好）。
+插件以 `link:` 方式接入 profile 的 `node_modules`；改动仓库后在下次
+`dsh web` 启动时生效（HMR 只热替换已知的浏览器 bundle，见下节「激活」）。
 
 ## 激活（重要）
 
@@ -177,11 +206,27 @@ dsh --profile web        # 或 dsh web
 
 > 注意：重启会结束当前正在该 web 进程内运行的会话。
 
+## 发布
+
+插件零依赖且为预构建（浏览器 bundle 是手写的），发布就是普通的 npm 发布：
+
+```sh
+cd dsh-session-status
+npm publish --access public        # 首次发布：认领包名
+npm version patch && npm publish   # 后续发版
+```
+
+`files` 字段限定 tarball 内容只有 `lib/`、`cordis.patch.yml` 和两份 README。
+包名为 `dsh-status-light`，因为 npm 上的 `dsh-session-status` 已被一个
+不相关的项目占用。
+
 ## 卸载
 
 ```sh
-dsh plugin --profile web remove dsh-session-status
+dsh plugin --profile web remove dsh-status-light
 ```
+
+卸载按已安装状态对账，条目会自动从 `dsh.profile.bundles` 移除。
 
 ## 已知限制
 
