@@ -375,14 +375,26 @@ def _tray_build_menu(client, on_quit, set_visible=None):
             client._apply(None, ok=False)
 
     def _quit(_icon, _item):
-        on_quit(_icon)
+        # Runs on the win32 message-loop thread inside the WndProc — any
+        # exception here drops the message; never let one escape.
+        try:
+            on_quit(_icon)
+        except Exception:
+            pass
+
+    def _status_text(_it):
+        # text position = callable(item) — 1 arg; evaluated each time the
+        # backend rebuilds the native menu (on the win32 loop thread), so
+        # it must never raise. (An action callable would take (icon, item)
+        # and never fire here anyway: the item is disabled.)
+        try:
+            return status_line(client)
+        except Exception:
+            return ""
 
     items = (
-        # text position = callable(item) — 1 arg; evaluated each time the
-        # backend rebuilds the native menu. (An action callable would take
-        # (icon, item) and never fire here anyway: the item is disabled.)
         pystray.MenuItem(
-            lambda it: status_line(client),
+            _status_text,
             None,
             default=True,
             enabled=False,
@@ -429,8 +441,22 @@ def run_tray(args):
     icon = None
 
     def _quit(_icon):
-        client.stop()
-        _icon.stop()
+        # Runs on the message-loop thread inside the WndProc (with
+        # ic.run() that is the main thread): keep it fast and
+        # exception-proof, and backstop the exit — if the loop thread
+        # is the thing that is wedged, no later cleanup runs, and a
+        # dead process is the only guarantee the icon goes away.
+        try:
+            client.stop()
+        except Exception:
+            pass
+        threading.Thread(
+            target=lambda: (time.sleep(4.0), os._exit(0)),
+            daemon=True, name="dsh-status-hard-exit").start()
+        try:
+            _icon.stop()
+        except Exception:
+            pass
 
     def ensure_icon():
         nonlocal icon
@@ -599,14 +625,57 @@ def run_widget(args):
     # is fully up BEFORE client.start() — exactly one start.
     tray_icon = None
 
+    # "Quit is being requested" latch + hard-exit backstop. Arming it at
+    # the MOMENT the user clicks 退出 (not after mainloop returns — which
+    # may never happen if the tray's message loop is the thing that is
+    # stuck) guarantees the process is gone within ~4s no matter what is
+    # wedged; Windows removes the process's tray icons when it dies.
+    _quitting = [False]
+
+    def _arm_hard_exit():
+        if _quitting[0]:
+            return
+        _quitting[0] = True
+        threading.Thread(
+            target=lambda: (time.sleep(4.0), os._exit(0)),
+            daemon=True, name="dsh-status-hard-exit").start()
+
+    def _request_quit():
+        # Runs on the tk main thread (via the UI queue). Does the whole
+        # teardown: persist, stop the client, stop the tray icon, destroy
+        # the window. Icon.stop() from the main thread is safe: it only
+        # posts WM_STOP (any thread may post) and joins the long-dead
+        # setup thread, so it returns promptly; the tray's loop thread
+        # (free, because the menu callback returned immediately) then
+        # processes WM_STOP and cleans up the icon normally.
+        _persist()
+        _arm_hard_exit()
+        try:
+            client.stop()
+        except Exception:
+            pass
+        if tray_icon is not None:
+            try:
+                tray_icon.stop()
+            except Exception:
+                pass
+        try:
+            if root.winfo_exists():
+                root.destroy()
+        except Exception:
+            pass
+
     def _tray_set_visible(v):
         # pystray worker thread -> main thread via the UI queue
         ui_queue.put(lambda: (_set_visible(v), _persist()))
 
     def _tray_quit(_icon):
-        _icon.stop()
-        # destroy must run on the main thread; the pump will pick this up
-        ui_queue.put(root.destroy)
+        # Runs INSIDE pystray's win32 WndProc on the tray message-loop
+        # thread. It must return immediately: a blocking stop() there
+        # freezes the icon pump, and an escaping exception drops the
+        # message (WM_STOP included) in the WndProc — exactly the
+        # "clicked 退出, icon stays, menu never opens again" zombie.
+        ui_queue.put(_request_quit)
 
     try:
         tray_icon = pystray.Icon(
@@ -616,6 +685,7 @@ def run_widget(args):
             _tray_build_menu(client, _tray_quit,
                              set_visible=_tray_set_visible),
         )
+        tray_icon._dsh_started = time.monotonic()
         tray_icon.run_detached()
         _tray_apply_state(lambda: tray_icon, client.state)
         client.on_state = lambda st, snap: (
@@ -636,6 +706,77 @@ def run_widget(args):
         root.destroy()
         return 1
     client.start()
+
+    def _respawn_tray():
+        # Rebuild the tray icon after its message-loop thread died.
+        # pystray's run_detached spawns the loop thread with the
+        # exception swallowed (threading.Thread(...).start()), so a
+        # startup-phase failure (e.g. antivirus locking the temp icon
+        # file, Shell failure) leaves a ZOMBIE: the tray icon stays
+        # visible (no NIM_DELETE ever comes) but right-clicks are dead
+        # because nothing pumps its hidden window's messages. The tray
+        # is mandatory in this app, so a dead loop thread is a state
+        # we must recover from, not wait out.
+        nonlocal tray_icon
+        old_ic = tray_icon
+        tray_icon = None
+        if old_ic is not None:
+            # Do NOT call old_ic.stop() here: if the loop thread died
+            # before _mark_ready, its setup thread blocks forever on the
+            # ready-queue and stop() burns its full 5s join timeout. The
+            # loop thread is dead by definition, so it will never clean
+            # up — send NIM_DELETE directly (thread-safe shell call) to
+            # make the zombie icon disappear right now.
+            try:
+                old_ic._message(0, 0)  # NIM_DELETE (win32: code 0)
+            except Exception:
+                pass
+        try:
+            tray_icon = pystray.Icon(
+                "dsh-session-status",
+                _load_icon(UNKNOWN),
+                TITLE[UNKNOWN],
+                _tray_build_menu(client, _tray_quit,
+                                 set_visible=_tray_set_visible),
+            )
+            tray_icon._dsh_started = time.monotonic()
+            tray_icon.run_detached()
+            _tray_apply_state(lambda: tray_icon, client.state)
+            print("[widget] 托盘图标已重建 / tray icon rebuilt")
+        except Exception as exc2:
+            print("[widget] 托盘图标重建失败 / rebuild failed: %s" % exc2)
+            tray_icon = None
+
+    def _tray_watchdog():
+        # Watches the tray's message-loop thread (the thread pystray
+        # swallows exceptions in) and rebuilds the icon if it dies.
+        time.sleep(5.0)          # let startup settle
+        rebuilds = 0
+        while True:
+            time.sleep(3.0)
+            if _quitting[0]:
+                return
+            ic = tray_icon
+            if ic is None:
+                continue
+            t = getattr(ic, "_thread", None)
+            age = time.monotonic() - getattr(
+                ic, "_dsh_started", time.monotonic())
+            dead = (t is not None and not t.is_alive()) or (
+                t is None and age > 10.0)  # died before _thread was set
+            if not dead:
+                continue
+            rebuilds += 1
+            print("[widget] 检测到托盘消息循环已死,重建中(第 %d 次)..."
+                  % rebuilds)
+            if rebuilds > 5:
+                print("[widget] 托盘已重建 5 次仍死亡 — 请检查杀毒软件/系统资源")
+                return
+            _respawn_tray()
+
+    threading.Thread(
+        target=_tray_watchdog, daemon=True,
+        name="dsh-status-tray-watchdog").start()
 
     def _reset_position(_e=None):
         w, h, x, y = _widget_default_geometry(root)
@@ -697,11 +838,9 @@ def run_widget(args):
             pass
 
     def _quit_all(_e=None):
-        _persist()
-        client.stop()
-        if tray_icon is not None:
-            _stop_tray(tray_icon)
-        root.destroy()
+        # Same hardened teardown as the tray 退出 (persist, hard-exit
+        # backstop, client stop, tray stop, destroy on this main thread).
+        _request_quit()
 
     # Entry 0 is the pin toggle (its label is refreshed by _toggle_pin via
     # entryconfig(0, …)); keep it first. The tray icon is always present,
