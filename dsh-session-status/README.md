@@ -19,6 +19,12 @@ process running, or nothing going on.
 Precedence is `red > yellow > green`: a session that is running *and* waiting on
 an approval shows red.
 
+> ⚠️ **DSH version compatibility (v0.5.1)** — **known issue: does not work on
+> DSH 0.2.0.** On DSH 0.2.0 the plugin fails to load and can prevent the web
+> GUI from starting at all; on DSH **0.1.5** it works normally. Until a
+> compatible release is out, stay on DSH 0.1.5, or remove the plugin
+> (`dsh plugin --profile web remove dsh-status-light`) and restart.
+
 ## Data source (zero extra dependencies)
 
 Reads only two standard client stores (no RPC, no added deps):

@@ -45,6 +45,14 @@ on you shows red — "needs a human" always beats "just moving". The state is
 - Python 3.9+ for the desktop tool (`--once` / `--widget` modes are stdlib-only;
   tray mode adds `pystray` + `Pillow`)
 
+### DSH version compatibility
+
+> ⚠️ **Known issue (v0.5.1): does not work on DSH 0.2.0.** On DSH **0.2.0**
+> the plugin fails to load and can prevent the web GUI from starting at all.
+> On DSH **0.1.5** it works normally. Until a compatible release is out,
+> stay on 0.1.5, or remove the plugin (`dsh plugin --profile web remove
+> dsh-status-light`) and restart.
+
 ## Quick start
 
 ### 1. Browser sidebar + tab (DSH plugin)
