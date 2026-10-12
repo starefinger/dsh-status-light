@@ -1,17 +1,28 @@
 /**
  * dsh-session-status — host bridge tests (plain node, zero deps).
  *
- * Three layers:
+ * Four layers:
  *   A. StatusBridge state machine (unit)
  *   B. Route handler over a REAL node:http server (snapshot + SSE + caps + gate)
  *   C. Full apply() integration with a fake host ctx (event bus, agents
- *      registry, web server, settings watch) — the exact wiring the real
- *      composition runs at boot.
+ *      registry, web server, settings page policy) — the 0.2.0 wiring the
+ *      real composition runs at boot: `apply(ctx, config)` with a validated
+ *      volatile-reference config, and the volatile hot-toggle committed the
+ *      way the Loader commits it (in-place reference write +
+ *      `loader/volatile-update` on the entry context).
+ *   D. End-to-end against the REAL cordis Context + cordis-plugin-loader
+ *      (installed with DSH): boot the actual plugin module as a Loader entry,
+ *      drive settings writes through the real entry.update() path, and
+ *      verify the volatile-only commits land in place without remounting.
+ *      Skipped (not failed) when no DSH install is resolvable.
  *
- * Run: node test-status-server.cjs   (exits non-zero on first failure)
+ * Run: node test-status-server.mjs   (exits non-zero on first failure)
  */
 
 import { createServer } from "node:http";
+import { createRequire } from "node:module";
+import { existsSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import assert from "node:assert/strict";
 import {
   StatusBridge,
@@ -21,7 +32,7 @@ import {
   buildSnapshot,
   makeRouteHandler,
 } from "./dsh-session-status/lib/bridge.js";
-import { apply, StatusSchema, SETTINGS_NAMESPACE } from "./dsh-session-status/lib/index.js";
+import { apply, Config, SETTINGS_NAMESPACE } from "./dsh-session-status/lib/index.js";
 
 let passed = 0;
 function check(name, fn) {
@@ -136,8 +147,7 @@ async function sectionA() {
 
   await check("close() drops subscribers and resets", () => {
     const b = new StatusBridge();
-    const frames = [];
-    const off = b.subscribe(() => {}, (s) => frames.push(s));
+    const off = b.subscribe(() => {}, (s) => s && s.state);
     off();
     b.close();
     assert.equal(b.subscribers.size, 0);
@@ -329,9 +339,51 @@ async function sectionB() {
 }
 
 // ---------------------------------------------------------------------------
-// C. Full apply() integration with a fake host ctx
+// C. Full apply() integration with a fake host ctx (0.2.0 contract)
 // ---------------------------------------------------------------------------
-/** A minimal fake of the pieces apply() touches. */
+/** The cosmokit volatile write key (same Symbol.for as the plugin). */
+const VOLATILE_WRITE = Symbol.for("cosmokit.volatile.write");
+
+/**
+ * Read a validated config field that is a volatile reference.
+ */
+function refValue(field, fallback) {
+  if (field !== null && typeof field === "object" && typeof field.get === "function") {
+    return field.get();
+  }
+  return field === undefined ? fallback : field;
+}
+
+/**
+ * Commit a volatile-only raw config change the way the Loader does
+ * (`_commitVolatile`): validate the raw candidate, write the changed values
+ * INTO the running references (in place), then emit `loader/volatile-update`
+ * on the entry context with the changed paths.
+ * @param fake - `{ ctx, config }` from makeFakeCtx.
+ * @param raw - the new raw entry config (as dsh-settings persists it).
+ * @returns the changed paths.
+ */
+function commitVolatile(fake, raw) {
+  const candidate = Config["~standard"].validate(raw);
+  assert.ok(!candidate.issues, "candidate must validate: " + JSON.stringify(candidate.issues));
+  const paths = [];
+  for (const key of Object.keys(fake.config)) {
+    const ref = fake.config[key];
+    const source = candidate.value[key];
+    if (refValue(ref) !== refValue(source)) {
+      ref[VOLATILE_WRITE](refValue(source));
+      paths.push([key]);
+    }
+  }
+  fake.ctx.fireEmit("loader/volatile-update", paths);
+  return paths;
+}
+
+/**
+ * A minimal fake of the pieces apply() touches in the 0.2.0 model:
+ * the entry context (with `fiber`), the agents registry, the web server,
+ * and the settings page-policy service (`configure`, not `register`).
+ */
 function makeFakeCtx({ withAgents = true, withWebServer = true, withSettings = true } = {}) {
   const agents = withAgents
     ? {
@@ -356,33 +408,34 @@ function makeFakeCtx({ withAgents = true, withWebServer = true, withSettings = t
       }
     : undefined;
 
+  // 0.2.0 settings service face the plugin uses: `configure(presentation,
+  // owner)` returns a disposer; the settings service rejects a second policy
+  // for the same owner fiber (the real one throws).
   const settings = withSettings
     ? {
-        registered: {},
-        register(ns, schema) {
-          assert.equal(ns, SETTINGS_NAMESPACE);
-          const resolved = schema();
-          const watchers = new Set();
-          const scope = {
-            ns,
-            resolved,
-            get: () => scope.resolved,
-            watch(cb) {
-              watchers.add(cb);
-              return () => watchers.delete(cb);
-            },
-            setEnabled(patch) {
-              scope.resolved = schema({ ...scope.resolved, ...patch });
-              for (const cb of watchers) cb();
-            },
+        policies: new Map(), // owner fiber -> presentation
+        configureCalls: 0,
+        configure(presentation, owner) {
+          assert.ok(owner, "page policy must carry an owner fiber");
+          assert.equal(
+            this.policies.has(owner),
+            false,
+            "duplicate page policy for the same fiber (the real service throws)"
+          );
+          this.policies.set(owner, presentation);
+          this.configureCalls += 1;
+          return () => {
+            if (this.policies.get(owner) === presentation) this.policies.delete(owner);
           };
-          settings.registered[ns] = scope;
-          return scope;
         },
       }
     : undefined;
 
+  // The entry fiber object (identity only: the settings policy is keyed by it).
+  const fiber = { uid: 1, name: SETTINGS_NAMESPACE };
+
   const ctx = {
+    fiber,
     get: (name) => {
       if (name === "agents") return agents;
       if (name === "webServer") return webServer;
@@ -452,115 +505,178 @@ function makeFakeCtx({ withAgents = true, withWebServer = true, withSettings = t
   return { ctx, agentsState, webServerRoutes, settings };
 }
 
-async function sectionC() {
-  console.log("C. apply() integration (fake host ctx)");
+/** Boot apply() the way the Loader boots it: validate the raw config, then apply(ctx, config). */
+function bootApply(fake, rawConfig = {}) {
+  const validated = Config["~standard"].validate(rawConfig);
+  assert.ok(!validated.issues, "raw config must validate: " + JSON.stringify(validated.issues));
+  fake.config = validated.value;
+  apply(fake.ctx, fake.config);
+  return fake.config;
+}
 
-  await check("settings namespace registered with new envelope shape", () => {
-    const { ctx, settings } = makeFakeCtx();
-    apply(ctx);
-    const scope = settings.registered[SETTINGS_NAMESPACE];
-    assert.ok(scope, "namespace registered");
-    const value = scope.get();
-    assert.deepEqual(value, { iconMode: "replace", bridgeEnabled: true });
-    // Envelope wire shape (uid 6, top-level boolean default true).
-    const env = StatusSchema.toJSON();
-    assert.equal(env.uid, 6);
-    assert.equal(env.refs[5].type, "boolean");
-    assert.equal(env.refs[5].meta.default, true);
-    assert.deepEqual(env.refs[6].dict, { iconMode: 3, bridgeEnabled: 5 });
-    // Rejection semantics.
-    assert.throws(() => StatusSchema({ iconMode: "bogus" }), TypeError);
-    assert.throws(() => StatusSchema({ bridgeEnabled: "yes" }), TypeError);
-    assert.deepEqual(StatusSchema({}), { iconMode: "replace", bridgeEnabled: true });
-    ctx.dispose();
+/** Drive a GET /session-status through the registered route handler. */
+function snapshotOf(webServerRoutes) {
+  if (!webServerRoutes.length) return null;
+  let body;
+  const res = {
+    writeHead() {},
+    end(b) {
+      body = b;
+    },
+    write() {},
+    on() {},
+    destroy() {},
+  };
+  webServerRoutes[0].handler({ method: "GET", url: "/session-status", socket: {} }, res);
+  return JSON.parse(body);
+}
+
+async function sectionC() {
+  console.log("C. apply() integration (fake host ctx, 0.2.0 contract)");
+
+  await check("Config ~standard: sync validate, {value}/{issues}, live volatile refs", () => {
+    assert.equal(Config["~standard"].version, 1, "standard schema version");
+    assert.equal(
+      Config["~standard"].vendor,
+      "schemastery",
+      "vendor tag — the Loader's equalExceptVolatile only runs the schema-aware volatile diff for vendor 'schemastery'"
+    );
+    const ok = Config["~standard"].validate({});
+    assert.ok(ok.value, "valid input yields {value}");
+    assert.ok(!("then" in ok), "validation is synchronous (no promise)");
+    // Volatile fields resolve to live references in the cosmokit protocol.
+    for (const [key, ref] of Object.entries(ok.value)) {
+      assert.equal(typeof ref.get, "function", `${key} is a live reference`);
+      assert.ok(VOLATILE_WRITE in ref, `${key} carries the volatile write key`);
+      assert.ok(Object.isFrozen(ref), `${key} reference is frozen`);
+    }
+    assert.equal(ok.value.iconMode.get(), "replace", "default iconMode");
+    assert.equal(ok.value.bridgeEnabled.get(), true, "default bridgeEnabled");
+    // Explicit values pass through.
+    const set = Config["~standard"].validate({ iconMode: "combined", bridgeEnabled: false });
+    assert.equal(set.value.iconMode.get(), "combined");
+    assert.equal(set.value.bridgeEnabled.get(), false);
+    // Rejections report {issues} with a path (cordis wraps them in ValidationError).
+    const badMode = Config["~standard"].validate({ iconMode: "bogus" });
+    assert.ok(badMode.issues && badMode.issues.length === 1, "invalid iconMode -> issues");
+    assert.deepEqual(badMode.issues[0].path, ["iconMode"]);
+    assert.match(badMode.issues[0].message, /iconMode/);
+    const badBool = Config["~standard"].validate({ bridgeEnabled: "yes" });
+    assert.ok(badBool.issues, "invalid bridgeEnabled -> issues");
+    assert.deepEqual(badBool.issues[0].path, ["bridgeEnabled"]);
+    // Non-object candidates fall back to defaults.
+    assert.equal(Config["~standard"].validate(undefined).value.iconMode.get(), "replace");
   });
 
-  await check("bridge route registered; snapshot answers through the route", async () => {
-    const { ctx, agentsState, webServerRoutes } = makeFakeCtx();
-    apply(ctx);
-    assert.equal(webServerRoutes.length, 1);
-    assert.equal(webServerRoutes[0].kind, "prefix");
-    assert.equal(webServerRoutes[0].path, "/session-status");
+  await check("Config form-projection face: type/dict/meta walk + per-leaf volatile + leaf toJSON", () => {
+    // dsh-settings projects the form by walking `type` / `dict` / `meta`
+    // (volatility read from `meta.volatile`) and rehydrates each volatile
+    // leaf from its own `toJSON()` — every surface must be present.
+    assert.equal(Config.type, "object");
+    assert.equal(Config.meta.volatile, undefined, "root is NOT volatile (only the leaves are)");
+    const icon = Config.dict.iconMode;
+    const bridge = Config.dict.bridgeEnabled;
+    assert.equal(icon.type, "union");
+    assert.equal(bridge.type, "boolean");
+    assert.equal(icon.meta.volatile, true);
+    assert.equal(bridge.meta.volatile, true);
+    assert.equal(icon.meta.default, "replace");
+    assert.equal(bridge.meta.default, true);
+    // Root meta.default carries the plain defaults (the form's base view).
+    assert.deepEqual(Config.meta.default, { iconMode: "replace", bridgeEnabled: true });
+    // Leaf envelopes are SELF-CONTAINED ({uid, refs}), never bare nodes —
+    // plainSchema rehydrates each one standalone.
+    for (const [key, leaf] of Object.entries(Config.dict)) {
+      const env = leaf.toJSON();
+      assert.equal(typeof env.uid, "number", `${key} leaf envelope has a uid`);
+      assert.ok(env.refs && typeof env.refs === "object", `${key} leaf envelope has refs`);
+      assert.ok(env.refs[env.uid], `${key} leaf envelope root ref present`);
+      // No dangling indices: every list/dict reference resolves.
+      const visit = (node) => {
+        for (const uid of node.list ?? []) visit(env.refs[uid]);
+        for (const uid of Object.values(node.dict ?? {})) visit(env.refs[uid]);
+        if (node.inner !== undefined) visit(env.refs[node.inner]);
+      };
+      visit(env.refs[env.uid]);
+    }
+  });
+
+  await check("Config root toJSON: frozen wire envelope (schemastery 3.18.4 shape)", () => {
+    const env = Config.toJSON();
+    assert.equal(env.uid, 8);
+    assert.deepEqual(Object.keys(env.refs).sort(), ["0", "1", "4", "7", "8"]);
+    assert.equal(env.refs[0].type, "const");
+    assert.equal(env.refs[0].value, "replace");
+    assert.equal(env.refs[1].value, "combined");
+    assert.equal(env.refs[4].type, "union");
+    assert.deepEqual(env.refs[4].list, [0, 1]);
+    assert.equal(env.refs[4].meta.default, "replace");
+    assert.equal(env.refs[4].meta.volatile, true);
+    assert.equal(env.refs[7].type, "boolean");
+    assert.equal(env.refs[7].meta.default, true);
+    assert.equal(env.refs[7].meta.volatile, true);
+    assert.equal(env.refs[8].type, "object");
+    assert.deepEqual(env.refs[8].dict, { iconMode: 4, bridgeEnabled: 7 });
+    // toJSON returns a fresh copy every call (the wire layer may mutate).
+    assert.notEqual(env, Config.toJSON());
+  });
+
+  await check("bridge route registered; snapshot answers through the route", () => {
+    const fake = makeFakeCtx();
+    bootApply(fake);
+    assert.equal(fake.webServerRoutes.length, 1);
+    assert.equal(fake.webServerRoutes[0].kind, "prefix");
+    assert.equal(fake.webServerRoutes[0].path, "/session-status");
     // Drive a real request through the registered handler.
-    const route = webServerRoutes[0];
-    const req = { method: "GET", url: "/session-status", socket: {} };
-    let code, body;
-    const res = {
-      writeHead(c, h) {
-        code = c;
-      },
-      end(b) {
-        body = b;
-      },
-      write() {},
-      on() {},
-      once() {},
-      destroy() {},
-    };
-    route.handler(req, res);
-    assert.equal(code, 200);
-    assert.equal(JSON.parse(body).state, "idle");
+    assert.equal(snapshotOf(fake.webServerRoutes).state, "idle");
     // An agent starts running via the registry + events.
-    agentsState.agents = [{ status: "running" }];
-    ctx.fireEmit("agent/created", {});
-    code = body = null;
-    route.handler(req, res);
-    assert.equal(JSON.parse(body).state, "running");
-    ctx.dispose();
-    assert.equal(webServerRoutes.length, 0, "dispose removes the route");
+    fake.agentsState.agents = [{ id: "agent-1", status: "running" }];
+    fake.ctx.fireEmit("agent/created", {});
+    assert.equal(snapshotOf(fake.webServerRoutes).state, "running");
+    assert.deepEqual(
+      snapshotOf(fake.webServerRoutes).runningIds,
+      ["agent-1"],
+      "runningIds carries the agent id"
+    );
+    fake.ctx.dispose();
+    assert.equal(fake.webServerRoutes.length, 0, "dispose removes the route");
+  });
+
+  await check("settings page policy registered in the bridge fiber ({auto:false}, entry fiber)", () => {
+    const fake = makeFakeCtx();
+    bootApply(fake);
+    assert.equal(fake.settings.configureCalls, 1, "policy registered exactly once at boot");
+    assert.deepEqual(fake.settings.policies.get(fake.ctx.fiber), { auto: false });
+    fake.ctx.dispose();
+    assert.equal(fake.settings.policies.size, 0, "dispose unwinds the policy");
+    // Re-applying (a remount) may register again — the effect, not the
+    // service, owns the lifetime.
+    bootApply(fake);
+    assert.equal(fake.settings.configureCalls, 2);
+    fake.ctx.dispose();
   });
 
   await check("approval waterfall tap: in-flight -> blocked -> settled", async () => {
-    const { ctx, webServerRoutes } = makeFakeCtx();
-    apply(ctx);
-    const route = webServerRoutes[0];
-    const snap = () => {
-      let body;
-      const res = {
-        writeHead() {},
-        end(b) {
-          body = b;
-        },
-        write() {},
-        on() {},
-        destroy() {},
-      };
-      route.handler({ method: "GET", url: "/session-status", socket: {} }, res);
-      return JSON.parse(body);
-    };
-    assert.equal(snap().state, "idle");
+    const fake = makeFakeCtx();
+    bootApply(fake);
+    assert.equal(snapshotOf(fake.webServerRoutes).state, "idle");
     // A request enters the waterfall; the tap counts it while pending.
-    const pending = ctx.runWaterfall("approval/request", { agent: "a" }, async () => {
+    const pending = fake.ctx.runWaterfall("approval/request", { agent: "a" }, async () => {
       await delay(30); // the human hasn't answered yet
       return "allowed-once";
     });
     await delay(5); // tap has entered, inner still pending
-    assert.equal(snap().state, "blocked", "in-flight request is red");
+    assert.equal(snapshotOf(fake.webServerRoutes).state, "blocked", "in-flight request is red");
     const outcome = await pending;
     assert.equal(outcome, "allowed-once", "tap preserves the chain outcome");
-    assert.equal(snap().state, "idle", "settled request no longer red");
-    ctx.dispose();
+    assert.equal(snapshotOf(fake.webServerRoutes).state, "idle", "settled request no longer red");
+    fake.ctx.dispose();
   });
 
   await check("user-questions waterfall tap: question -> blocked -> settled", async () => {
-    const { ctx, webServerRoutes } = makeFakeCtx();
-    apply(ctx);
-    const route = webServerRoutes[0];
-    const snap = () => {
-      let body;
-      const res = {
-        writeHead() {},
-        end(b) {
-          body = b;
-        },
-        write() {},
-        on() {},
-        destroy() {},
-      };
-      route.handler({ method: "GET", url: "/session-status", socket: {} }, res);
-      return JSON.parse(body);
-    };
-    const pending = ctx.runWaterfall(
+    const fake = makeFakeCtx();
+    bootApply(fake);
+    const pending = fake.ctx.runWaterfall(
       "user-questions/request",
       { questions: [] },
       async () => {
@@ -569,117 +685,330 @@ async function sectionC() {
       }
     );
     await delay(5);
-    assert.equal(snap().state, "blocked");
+    assert.equal(snapshotOf(fake.webServerRoutes).state, "blocked");
     await pending;
-    assert.equal(snap().state, "idle");
-    ctx.dispose();
+    assert.equal(snapshotOf(fake.webServerRoutes).state, "idle");
+    fake.ctx.dispose();
   });
 
   await check("tap is prepend: an earlier-registered answerer cannot hide it", async () => {
-    const { ctx, webServerRoutes } = makeFakeCtx();
+    const fake = makeFakeCtx();
     // Register a rival answerer BEFORE apply() (with a plain push-order tap
     // it would sit OUTERMOST and claim the request — the tap would never
     // see it). The claim is async so the in-flight window is observable.
-    ctx.on("approval/request", async (req, next) => {
+    fake.ctx.on("approval/request", async (req, next) => {
       await delay(30); // simulate the answerer holding the request
       return "rejected"; // claims the request, never calls next()
     });
-    apply(ctx);
-    const route = webServerRoutes[0];
-    const snap = () => {
-      let body;
-      const res = {
-        writeHead() {},
-        end(b) {
-          body = b;
-        },
-        write() {},
-        on() {},
-        destroy() {},
-      };
-      route.handler({ method: "GET", url: "/session-status", socket: {} }, res);
-      return JSON.parse(body);
-    };
-    const pending = ctx.runWaterfall("approval/request", {}, async () => "unavailable");
+    bootApply(fake);
+    const pending = fake.ctx.runWaterfall("approval/request", {}, async () => "unavailable");
     await delay(5);
-    assert.equal(snap().state, "blocked", "prepend tap sees the request even with a claimant");
+    assert.equal(
+      snapshotOf(fake.webServerRoutes).state,
+      "blocked",
+      "prepend tap sees the request even with a claimant"
+    );
     const outcome = await pending;
     assert.equal(outcome, "rejected", "rival answerer's outcome preserved");
-    assert.equal(snap().state, "idle");
-    ctx.dispose();
+    assert.equal(snapshotOf(fake.webServerRoutes).state, "idle");
+    fake.ctx.dispose();
   });
 
-  await check("agent/status + disposed events keep the running count honest", async () => {
-    const { ctx, agentsState, webServerRoutes } = makeFakeCtx();
-    apply(ctx);
-    const route = webServerRoutes[0];
-    const snap = () => {
-      let body;
-      const res = {
-        writeHead() {},
-        end(b) {
-          body = b;
-        },
-        write() {},
-        on() {},
-        destroy() {},
-      };
-      route.handler({ method: "GET", url: "/session-status", socket: {} }, res);
-      return JSON.parse(body);
-    };
-    agentsState.agents = [{ status: "running" }, { status: "idle" }];
-    ctx.fireEmit("agent/created", {});
-    assert.equal(snap().running, 1);
-    agentsState.agents = [{ status: "idle" }, { status: "idle" }];
-    ctx.fireEmit("agent/status", {});
-    assert.equal(snap().state, "idle");
-    ctx.fireEmit("agent/disposed", {});
-    assert.equal(snap().running, 0);
-    ctx.dispose();
+  await check("agent/status + disposed events keep the running count honest", () => {
+    const fake = makeFakeCtx();
+    bootApply(fake);
+    fake.agentsState.agents = [
+      { id: "agent-1", status: "running" },
+      { id: "agent-2", status: "idle" },
+    ];
+    fake.ctx.fireEmit("agent/created", {});
+    assert.equal(snapshotOf(fake.webServerRoutes).running, 1);
+    assert.deepEqual(snapshotOf(fake.webServerRoutes).runningIds, [
+      "agent-1",
+    ]);
+    fake.agentsState.agents = [
+      { id: "agent-1", status: "idle" },
+      { id: "agent-2", status: "idle" },
+    ];
+    fake.ctx.fireEmit("agent/status", {});
+    assert.equal(snapshotOf(fake.webServerRoutes).state, "idle");
+    fake.ctx.fireEmit("agent/disposed", {});
+    assert.equal(snapshotOf(fake.webServerRoutes).running, 0);
+    assert.deepEqual(snapshotOf(fake.webServerRoutes).runningIds, []);
+    fake.ctx.dispose();
   });
 
-  await check("settings watch: disabling removes the route, enabling restores it", async () => {
-    const { ctx, webServerRoutes, settings } = makeFakeCtx();
-    apply(ctx);
-    assert.equal(webServerRoutes.length, 1);
-    settings.registered[SETTINGS_NAMESPACE].setEnabled({ bridgeEnabled: false });
-    assert.equal(webServerRoutes.length, 0, "disabled: route unregistered");
-    settings.registered[SETTINGS_NAMESPACE].setEnabled({ bridgeEnabled: true });
-    assert.equal(webServerRoutes.length, 1, "re-enabled: route restored");
-    ctx.dispose();
+  await check("volatile hot-toggle: disabling removes the route, enabling restores it", () => {
+    const fake = makeFakeCtx();
+    const config = bootApply(fake);
+    assert.equal(fake.webServerRoutes.length, 1);
+    // dsh-settings persisted bridgeEnabled=false; the Loader commits it in
+    // place and dispatches loader/volatile-update to the entry fiber.
+    const paths = commitVolatile(fake, { bridgeEnabled: false });
+    assert.deepEqual(paths, [["bridgeEnabled"]], "only the changed path is reported");
+    assert.equal(fake.webServerRoutes.length, 0, "disabled: route unregistered");
+    assert.equal(snapshotOf(fake.webServerRoutes), null);
+    // No remount: the settings page policy was NOT re-registered (a remount
+    // would dispose + re-register it, i.e. configureCalls would grow).
+    assert.equal(fake.settings.configureCalls, 1, "hot-toggle does not remount the entry");
+    // The reference object is stable — the listener reads the live value.
+    assert.equal(config.bridgeEnabled.get(), false, "committed value is live in the reference");
+    // Re-enable.
+    commitVolatile(fake, { bridgeEnabled: true });
+    assert.equal(fake.webServerRoutes.length, 1, "re-enabled: route restored");
+    assert.equal(fake.settings.configureCalls, 1, "still no remount");
+    // A no-op commit (same value) changes nothing and reports no paths.
+    assert.deepEqual(commitVolatile(fake, { bridgeEnabled: true }), []);
+    assert.equal(fake.webServerRoutes.length, 1);
+    fake.ctx.dispose();
   });
 
-  await check("non-web composition (no agents/webServer): bridge thunk never runs", () => {
-    const { ctx, webServerRoutes, settings } = makeFakeCtx({
+  await check("volatile hot-toggle: an iconMode-only change leaves the bridge untouched", () => {
+    const fake = makeFakeCtx();
+    const config = bootApply(fake);
+    const paths = commitVolatile(fake, { iconMode: "combined" });
+    assert.deepEqual(paths, [["iconMode"]]);
+    assert.equal(fake.webServerRoutes.length, 1, "bridge stays up on iconMode change");
+    assert.equal(config.iconMode.get(), "combined", "iconMode committed in place");
+    assert.equal(config.bridgeEnabled.get(), true, "bridgeEnabled untouched");
+    fake.ctx.dispose();
+  });
+
+  await check("boot with bridgeEnabled=false: no route until a volatile commit enables it", () => {
+    const fake = makeFakeCtx();
+    const config = bootApply(fake, { bridgeEnabled: false });
+    assert.equal(config.bridgeEnabled.get(), false);
+    assert.equal(fake.webServerRoutes.length, 0, "disabled at boot: route never installed");
+    commitVolatile(fake, { bridgeEnabled: true });
+    assert.equal(fake.webServerRoutes.length, 1, "volatile commit installs the route");
+    assert.equal(snapshotOf(fake.webServerRoutes).state, "idle");
+    fake.ctx.dispose();
+    assert.equal(fake.webServerRoutes.length, 0, "dispose removes the route");
+  });
+
+  await check("non-web composition (no agents/webServer): bridge + policy never registered", () => {
+    const fake = makeFakeCtx({
       withAgents: false,
       withWebServer: false,
     });
-    apply(ctx);
-    assert.equal(webServerRoutes.length, 0, "no route without webServer");
-    assert.ok(
-      !webServerRoutes.some((r) => r.path === "/session-status"),
-      "bridge thunk never ran (service gate)"
-    );
+    bootApply(fake);
+    assert.equal(fake.webServerRoutes.length, 0, "no route without webServer");
     assert.equal(
-      settings.registered[SETTINGS_NAMESPACE],
-      undefined,
-      "namespace is owned by the bridge fiber; absent where the bridge is"
+      fake.settings.configureCalls,
+      0,
+      "page policy is owned by the bridge fiber; absent where the bridge is absent"
     );
-    ctx.dispose();
+    fake.ctx.dispose();
   });
 
-  await check("web services without settings provider: bridge still mounts", () => {
-    const { ctx, webServerRoutes, settings } = makeFakeCtx({
+  await check("web services without settings provider: bridge still mounts, no policy", () => {
+    const fake = makeFakeCtx({
       withAgents: true,
       withWebServer: true,
       withSettings: false,
     });
-    apply(ctx);
-    assert.ok(
-      webServerRoutes.some((r) => r.path === "/session-status"),
+    bootApply(fake);
+    assert.equal(
+      fake.webServerRoutes.length,
+      1,
       "bridge mounts without the settings provider"
     );
-    ctx.dispose();
+    fake.ctx.dispose();
+  });
+}
+
+// ---------------------------------------------------------------------------
+// D. End-to-end against the REAL cordis + cordis-plugin-loader (installed DSH)
+// ---------------------------------------------------------------------------
+/**
+ * Locate the DSH install's cordis / cordis-plugin-loader. Returns a
+ * createRequire rooted at that node_modules, or null when no DSH install is
+ * resolvable (the section is then skipped, not failed).
+ */
+function findDshModules() {
+  const candidates = [];
+  // $DSH_HOME is not needed; probe the standard global locations + PATH.
+  const homedir = process.env.HOME || process.env.USERPROFILE || "";
+  const roots = [
+    "/usr/lib/node_modules",
+    "/usr/local/lib/node_modules",
+  ];
+  if (homedir) roots.push(join(homedir, ".nvm/versions/node"));
+  // Also try resolving from the current process (works when DSH is a dep).
+  try {
+    const localReq = createRequire(import.meta.url);
+    roots.push(localReq.resolve.paths("@deepseek-ai/cordis")?.[0] || "");
+  } catch {}
+  for (const root of roots) {
+    if (!root || !existsSync(root)) continue;
+    const probe = join(root, "@deepseek-ai/dsh/node_modules");
+    if (existsSync(join(probe, "@deepseek-ai/cordis")) &&
+        existsSync(join(probe, "@deepseek-ai/cordis-plugin-loader"))) {
+      return { probe, req: createRequire(join(probe, "x.js")) };
+    }
+    // nvm: root is the versions dir — walk each node version.
+    try {
+      for (const v of readdirSync(root, { withFileTypes: true })) {
+        if (!v.isDirectory()) continue;
+        const p = join(root, v.name, "lib/node_modules/@deepseek-ai/dsh/node_modules");
+        if (existsSync(join(p, "@deepseek-ai/cordis")) &&
+            existsSync(join(p, "@deepseek-ai/cordis-plugin-loader"))) {
+          return { probe: p, req: createRequire(join(p, "x.js")) };
+        }
+      }
+    } catch {}
+  }
+  return null;
+}
+
+async function sectionD() {
+  console.log("D. End-to-end (real cordis Context + cordis-plugin-loader)");
+  const dsh = await findDshModules();
+  if (!dsh) {
+    console.log("  -- no DSH install found; section D skipped (install DSH to enable it)");
+    return;
+  }
+  const { Context } = dsh.req("@deepseek-ai/cordis");
+  const { Loader } = dsh.req("@deepseek-ai/cordis-plugin-loader");
+  const PLUGIN = "./dsh-session-status/lib/index.js";
+
+  /** Boot the REAL plugin module as a Loader entry with stub services. */
+  async function boot(initialConfig) {
+    const ctx = new Context();
+    const errors = [];
+    ctx.logger = {
+      debug: () => {},
+      info: () => {},
+      warn: () => {},
+      error: (...a) => errors.push(a),
+    };
+    const loader = new Loader(ctx, {});
+    await delay(0); // let the loader's internal plugin settle before entries
+    const webServerRoutes = [];
+    const agentsList = [];
+    const settingsStub = { calls: 0, configure() { this.calls += 1; return () => {}; } };
+    ctx.reflect.provide("agents", { list: () => agentsList });
+    ctx.reflect.provide("webServer", {
+      host: "127.0.0.1",
+      register(route) {
+        webServerRoutes.push(route);
+        return () => {
+          const i = webServerRoutes.indexOf(route);
+          if (i >= 0) webServerRoutes.splice(i, 1);
+        };
+      },
+    });
+    ctx.reflect.provide("settings", settingsStub);
+    const volatileUpdates = [];
+    ctx.on("loader/volatile-update", (paths) => volatileUpdates.push(paths), { global: true });
+    // Pre-resolve the plugin so the Loader imports the same module instance
+    // (relative entry names resolve against the test file's location).
+    await import(PLUGIN);
+    const id = await loader.root.create({
+      id: SETTINGS_NAMESPACE,
+      name: PLUGIN,
+      config: initialConfig ?? {},
+    });
+    const entry = loader.resolve(id);
+    await delay(30);
+    return { ctx, entry, webServerRoutes, agentsList, errors, volatileUpdates, settingsStub };
+  }
+
+  await check("boot: entry activates, route mounts, page policy registered", async () => {
+    const { webServerRoutes, settingsStub, volatileUpdates } = await boot();
+    assert.equal(webServerRoutes.length, 1, "route mounted");
+    assert.equal(webServerRoutes[0].path, STATUS_PATH);
+    assert.equal(settingsStub.calls, 1, "page policy registered once");
+    assert.deepEqual(volatileUpdates, [], "no volatile updates at boot");
+    const snap = snapshotOf(webServerRoutes);
+    assert.equal(snap.state, "idle");
+  });
+
+  await check("volatile-only write commits in place (no remount) and toggles the route", async () => {
+    const { entry, webServerRoutes, volatileUpdates, settingsStub } = await boot();
+    // dsh-settings persists the change into the entry's raw config; the
+    // Loader's entry.update is exactly what the profile patch triggers.
+    await entry.update({ config: { bridgeEnabled: false } });
+    await delay(30);
+    assert.equal(webServerRoutes.length, 0, "route uninstalled");
+    assert.deepEqual(volatileUpdates, [[["bridgeEnabled"]]], "emitted as a volatile update");
+    assert.equal(settingsStub.calls, 1, "NO remount (policy registered exactly once)");
+    await entry.update({ config: { bridgeEnabled: true } });
+    await delay(30);
+    assert.equal(webServerRoutes.length, 1, "route reinstalled");
+    assert.deepEqual(volatileUpdates, [[["bridgeEnabled"]], [["bridgeEnabled"]]]);
+    assert.equal(settingsStub.calls, 1, "still no remount");
+  });
+
+  await check("boot disabled + iconMode-only change keeps it off; enabling brings it up", async () => {
+    const { entry, webServerRoutes, volatileUpdates } = await boot({ bridgeEnabled: false });
+    assert.equal(webServerRoutes.length, 0, "no route when disabled at boot");
+    await entry.update({ config: { bridgeEnabled: false, iconMode: "combined" } });
+    await delay(30);
+    assert.equal(webServerRoutes.length, 0, "iconMode-only change keeps bridge off");
+    await entry.update({ config: { iconMode: "combined", bridgeEnabled: true } });
+    await delay(30);
+    assert.equal(webServerRoutes.length, 1, "enable brings the route up");
+    assert.deepEqual(
+      volatileUpdates.flatMap((p) => p).flat().sort(),
+      ["bridgeEnabled", "iconMode"],
+      "both fields committed volatile-only"
+    );
+  });
+
+  await check("invalid config at boot: entry stays inactive, error logged, no crash", async () => {
+    const { webServerRoutes, errors } = await boot({ iconMode: "bogus" });
+    assert.equal(webServerRoutes.length, 0, "bridge never starts");
+    assert.ok(errors.length >= 1, "validation error was logged to the host logger");
+  });
+
+  await check("agent events + waterfall taps through the real cordis dispatch", async () => {
+    const { entry, webServerRoutes, agentsList } = await boot();
+    // running count
+    agentsList.push({ id: "agent-1", status: "running" }, { id: "agent-2", status: "idle" });
+    entry.fiber.ctx.emit("agent/created", {});
+    assert.equal(snapshotOf(webServerRoutes).running, 1);
+    assert.deepEqual(snapshotOf(webServerRoutes).runningIds, ["agent-1"]);
+    agentsList.length = 0;
+    entry.fiber.ctx.emit("agent/disposed", {});
+    assert.equal(snapshotOf(webServerRoutes).running, 0);
+    assert.deepEqual(snapshotOf(webServerRoutes).runningIds, []);
+    // blocked count (real waterfall, incl. a claimant that never calls next)
+    const pending = entry.fiber.ctx.waterfall(
+      entry.fiber.ctx,
+      "approval/request",
+      { agent: "a" },
+      () => new Promise((r) => setTimeout(() => r("allowed-once"), 30))
+    );
+    await delay(10);
+    assert.equal(snapshotOf(webServerRoutes).state, "blocked");
+    assert.equal(await pending, "allowed-once");
+    assert.equal(snapshotOf(webServerRoutes).state, "idle");
+    entry.fiber.ctx.on(
+      "user-questions/request",
+      async (q, next) => {
+        await delay(30);
+        return { claimed: true };
+      }
+    );
+    const pending2 = entry.fiber.ctx.waterfall(
+      entry.fiber.ctx,
+      "user-questions/request",
+      { questions: [] },
+      () => "unavailable"
+    );
+    await delay(10);
+    assert.equal(snapshotOf(webServerRoutes).state, "blocked", "prepend tap sees claimant-held request");
+    assert.deepEqual(await pending2, { claimed: true });
+    assert.equal(snapshotOf(webServerRoutes).state, "idle");
+  });
+
+  await check("entry dispose removes the route", async () => {
+    const { entry, webServerRoutes } = await boot();
+    assert.equal(webServerRoutes.length, 1);
+    entry.fiber.dispose();
+    await delay(50);
+    assert.equal(webServerRoutes.length, 0, "dispose removes the route");
   });
 }
 
@@ -687,4 +1016,5 @@ async function sectionC() {
 await sectionA();
 await sectionB();
 await sectionC();
+await sectionD();
 console.log(`\nall ${passed} checks passed`);

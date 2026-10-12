@@ -47,11 +47,14 @@ on you shows red — "needs a human" always beats "just moving". The state is
 
 ### DSH version compatibility
 
-> ⚠️ **Known issue (v0.5.1): does not work on DSH 0.2.0.** On DSH **0.2.0**
-> the plugin fails to load and can prevent the web GUI from starting at all.
-> On DSH **0.1.5** it works normally. Until a compatible release is out,
-> stay on 0.1.5, or remove the plugin (`dsh plugin --profile web remove
-> dsh-status-light`) and restart.
+| Plugin | DSH | Notes |
+| --- | --- | --- |
+| **v0.6.0** (current) | **0.2.0** | tracks the 0.2.0 settings rearchitecture (Config-projected forms, `configForms`, unified `uiSession.sessionStatus`); volatile settings hot-toggle |
+| v0.5.x | 0.1.5 | the old `settings.register` namespace model; **does not work on 0.2.0** (the plugin fails to load and can prevent the web GUI from starting) |
+
+Match the plugin major to your DSH major: on DSH 0.2.0 use v0.6.0; on
+DSH 0.1.5 stay on v0.5.x (or remove the plugin with
+`dsh plugin --profile web remove dsh-session-status` and restart).
 
 ## Quick start
 
@@ -59,11 +62,14 @@ on you shows red — "needs a human" always beats "just moving". The state is
 
 ```sh
 # from npm (published):
-dsh plugin --profile web add dsh-status-light
+dsh plugin --profile web add dsh-session-status
 # or from a local checkout (dev):
 dsh plugin --profile web add /path/to/dsh-session-status
-dsh --profile web           # effective after restart
 ```
+
+A first install takes effect in the **already-running** web instance (live
+entry-tree reconcile, seconds later); see the plugin README's Activation
+section for the cases that do need a `dsh web` restart.
 
 ### 2. Desktop pill + tray (Python tool)
 
@@ -96,7 +102,7 @@ place, so every surface always agrees.
 ## Repository structure
 
 ```
-dsh-session-status/     browser plugin (npm: dsh-status-light): sidebar light + tab favicon + settings page + status bridge
+dsh-session-status/     browser plugin (npm: dsh-session-status): sidebar light + tab favicon + settings page + status bridge
 desktop/                unified home for desktop companions (may hold several implementations)
   desktop-python/       Python edition: always-on-top pill + system tray (current edition)
 test-*.mjs / .cjs       plugin tests

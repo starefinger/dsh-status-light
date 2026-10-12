@@ -1,17 +1,47 @@
 /**
- * dsh-session-status — host half.
+ * dsh-session-status — host half (DSH 0.2.0 compatible).
  *
  * Two independent responsibilities:
  *
- * 1. Settings namespace `session-status`: `iconMode` (the browser tab-icon
+ * 1. Plugin Config `session-status`: `iconMode` (the browser tab-icon
  *    preference) and `bridgeEnabled` (whether the desktop status bridge
- *    answers). Persisted in `$DSH_HOME/settings.yaml`, hot-reloaded by the
- *    settings-file provider. Both fields are TOP-LEVEL scalars so the client
- *    settings scope can write each with its single-level `set()`.
+ *    answers), both declared VOLATILE so a settings write hot-commits the
+ *    new value into the running fiber without remounting the entry. In the
+ *    0.2.0 model the settings forms are projected AUTOMATICALLY from a
+ *    bundle plugin's `Config` schema (the pre-0.2.0 `settings.register`
+ *    namespace API is gone); the namespace id IS the Loader entry id.
+ *
+ *    Schema strategy (zero dependencies): DSH's settings + registry only
+ *    ever touch the schema through four surfaces, all reproduced here by
+ *    hand:
+ *      (a) cordis validates the raw config with
+ *          `Config["~standard"].validate(config)` (sync, `{value}` or
+ *          `{issues}`) — for volatile fields the resolved value is a live
+ *          reference (the cosmokit volatile protocol: frozen
+ *          `{get(), [Symbol.for("cosmokit.volatile.write")]}`), so the
+ *          loader can commit changes in place. `~standard` also carries
+ *          `version: 1` and `vendor: "schemastery"` exactly like a real
+ *          schemastery schema: the Loader's `equalExceptVolatile` only
+ *          performs the schema-aware volatile diff when it sees that
+ *          vendor tag — without it every settings write (even one that
+ *          touches only volatile fields) is misclassified as an ordinary
+ *          config change and remounts the whole entry;
+ *      (b) dsh-settings projects forms by WALKING `type` / `dict` /
+ *          `meta` on the schema object itself (volatility is read from
+ *          `meta.volatile`);
+ *      (c) dsh-settings rehydrates a REAL schemastery instance from
+ *          `schema.toJSON()` for every volatile field — so each leaf node
+ *          also carries `toJSON()`;
+ *      (d) `settings.describe` publishes the root `toJSON()` envelope,
+ *          which the browser rehydrates with its own bundled schemastery
+ *          copy.
+ *    The frozen envelopes below are the byte-exact serialization of
+ *    schemastery 3.18.4 (the version DSH 0.2.0-rc.2 ships) — regenerate
+ *    them if that version's serialization ever changes.
  *
  * 2. The desktop status bridge: a read-only HTTP endpoint mounted on the
  *    ALREADY RUNNING web server (no new port, no new listener) that a small
- *    Windows tray tool polls/streams for the same red/yellow/green state the
+ *    desktop tool polls/streams for the same red/yellow/green state the
  *    browser indicator shows:
  *
  *      GET /session-status         → one JSON snapshot, connection closes
@@ -37,16 +67,13 @@
  *    The bridge is a soft dependency: compositions without the `agents` or
  *    `webServer` services (non-web profiles) simply never start it.
  *
- * Schema strategy (zero dependencies): the settings service only ever
- * (a) CALLS `schema(data)` to resolve a candidate value, (b) publishes
- * `schema.toJSON()` as the serialized envelope the browser rehydrates with
- * ITS OWN bundled schemastery copy, and (c) walks `type` / `dict` /
- * `inner` / `meta.role` for secret redaction. So we keep a tiny hand-rolled
- * live node whose `toJSON()` returns a FROZEN envelope captured once from
- * the real schemastery (`object({ iconMode: union([const, const]).default(),
- * bridgeEnabled: boolean().default(true) }).toJSON()`) — the
- * published qwen-local plugin freezes its envelope for exactly this reason,
- * which lets this plugin carry no schemastery import.
+ * 0.2.0 hot-toggle wiring: the Loader commits a volatile-only config
+ * change into the running fiber's config REFERENCES (in place) and emits
+ * `loader/volatile-update` to the OWN entry fiber only — so the listener
+ * lives on the context `apply` receives, not on the nested bridge fiber.
+ * The bridge route installs/uninstalls on every change; a change that also
+ * touched an ordinary field takes the normal entry-remount path instead
+ * (this `apply` is re-entrant safe).
  */
 
 import { STATUS_PATH, StatusBridge, makeRouteHandler } from "./bridge.js";
@@ -57,68 +84,173 @@ const DEFAULT_MODE = "replace";
 const DEFAULT_BRIDGE_ENABLED = true;
 
 /**
- * Frozen schemastery wire envelope for the `session-status` namespace.
- * Generated from `Schema.object({ iconMode: Schema.union([
- *   Schema.const("replace"), Schema.const("combined")
- * ]).default("replace"), bridgeEnabled: Schema.boolean().default(true)
- * }) }).toJSON()` — do not hand-edit the uids.
+ * The cosmokit volatile-reference write key. `Symbol.for` makes it the same
+ * symbol in every ESM/CJS copy of the shared library, so our hand-made
+ * references are accepted by the Loader's `updateVolatile`/`isVolatile`
+ * checks without importing cosmokit.
+ */
+const VOLATILE_WRITE = Symbol.for("cosmokit.volatile.write");
+
+/**
+ * Create a frozen live reference in the cosmokit volatile protocol
+ * (`{get(), [VOLATILE_WRITE](next)}`); the Loader writes new values into it
+ * in place when a volatile settings change is committed.
+ * @param value - the initial plain value.
+ * @returns a frozen reference object.
+ */
+function makeVolatile(value) {
+  let current = value;
+  return Object.freeze({
+    get: () => current,
+    [VOLATILE_WRITE]: (next) => {
+      current = next;
+    },
+  });
+}
+
+/**
+ * Read one config field that may be a volatile reference (or a plain value
+ * in non-runtime contexts such as tests).
+ * @param field - the field as it appears in the validated config.
+ * @param fallback - used only when the field is absent.
+ * @returns the plain value.
+ */
+function readField(field, fallback) {
+  if (field !== null && typeof field === "object" && typeof field.get === "function") {
+    return field.get();
+  }
+  return field === undefined ? fallback : field;
+}
+
+/**
+ * Validate one raw config candidate (cordis contract: synchronous,
+ * `{value}` on success, `{issues}` on failure). Volatile fields resolve to
+ * live references.
+ * @param data - raw candidate (profile layer; may be absent).
+ * @returns `{value: {iconMode: ref, bridgeEnabled: ref}}` or `{issues}`.
+ */
+function validateSection(data) {
+  const raw = data !== null && typeof data === "object" ? data : {};
+  const issues = [];
+  if (raw.iconMode !== undefined && MODES.indexOf(raw.iconMode) === -1) {
+    issues.push({
+      message: `iconMode expected "replace" | "combined" but got ${JSON.stringify(raw.iconMode)}`,
+      path: ["iconMode"],
+    });
+  }
+  if (raw.bridgeEnabled !== undefined && typeof raw.bridgeEnabled !== "boolean") {
+    issues.push({
+      message: "bridgeEnabled expected boolean",
+      path: ["bridgeEnabled"],
+    });
+  }
+  if (issues.length) return { issues };
+  return {
+    value: {
+      iconMode: makeVolatile(
+        raw.iconMode === undefined ? DEFAULT_MODE : raw.iconMode
+      ),
+      bridgeEnabled: makeVolatile(
+        raw.bridgeEnabled === undefined ? DEFAULT_BRIDGE_ENABLED : raw.bridgeEnabled
+      ),
+    },
+  };
+}
+
+/**
+ * Frozen wire envelopes — the schemastery 3.18.4 serialization of
+ *   z.object({
+ *     iconMode: z.union([z.const("replace"), z.const("combined")])
+ *       .default("replace").volatile(),
+ *     bridgeEnabled: z.boolean().default(true).volatile(),
+ *   }).toJSON()
+ * Do not hand-edit the uids.
  * @type {Readonly<{uid: number, refs: Record<string, object>}>}
  */
 const ENVELOPE = {
-  uid: 6,
+  uid: 8,
   refs: {
     0: { type: "const", meta: {}, value: "replace" },
     1: { type: "const", meta: {}, value: "combined" },
-    3: { type: "union", meta: { default: DEFAULT_MODE }, list: [0, 1] },
-    5: { type: "boolean", meta: { default: DEFAULT_BRIDGE_ENABLED } },
-    6: {
+    4: {
+      type: "union",
+      meta: { default: DEFAULT_MODE, volatile: true },
+      list: [0, 1],
+    },
+    7: { type: "boolean", meta: { default: DEFAULT_BRIDGE_ENABLED, volatile: true } },
+    8: {
       type: "object",
       meta: { default: {} },
-      dict: { iconMode: 3, bridgeEnabled: 5 },
+      dict: { iconMode: 4, bridgeEnabled: 7 },
     },
   },
 };
 
 /**
- * Resolve one candidate section, mirroring the schemastery schema's semantics:
- * `iconMode` defaults to `"replace"` and must be one of `MODES`;
- * `bridgeEnabled` defaults to `true` and must be a boolean.
- * @param data - raw candidate (user layer merged over base by the service).
- * @returns resolved section, always `{ iconMode, bridgeEnabled }`.
+ * Self-contained leaf envelopes — the byte-exact schemastery 3.18.4
+ * serialization of each leaf in isolation (real schemastery always
+ * serializes a node as a complete `{uid, refs}` envelope, never a bare
+ * node; `plainSchema` rehydrates `leaf.toJSON()` standalone, so a bare
+ * node would carry dangling ref indices).
+ * @type {Record<string, {uid: number, refs: Record<string, object>}>}
  */
-function resolveSection(data) {
-  const raw = data !== null && typeof data === "object" ? data : {};
-  if (raw.iconMode !== undefined && MODES.indexOf(raw.iconMode) === -1) {
-    throw new TypeError(
-      `settings namespace "${NS}": $.iconMode expected "replace" | "combined" but got ${JSON.stringify(raw.iconMode)}`
-    );
-  }
-  if (raw.bridgeEnabled !== undefined && typeof raw.bridgeEnabled !== "boolean") {
-    throw new TypeError(
-      `settings namespace "${NS}": $.bridgeEnabled expected boolean but got ${JSON.stringify(raw.bridgeEnabled)}`
-    );
-  }
-  return {
-    iconMode: raw.iconMode === undefined ? DEFAULT_MODE : raw.iconMode,
-    bridgeEnabled:
-      raw.bridgeEnabled === undefined ? DEFAULT_BRIDGE_ENABLED : raw.bridgeEnabled,
-  };
-}
+const LEAF_ENVELOPES = {
+  iconMode: {
+    uid: 4,
+    refs: {
+      0: { type: "const", meta: {}, value: "replace" },
+      1: { type: "const", meta: {}, value: "combined" },
+      4: {
+        type: "union",
+        meta: { default: DEFAULT_MODE, volatile: true },
+        list: [0, 1],
+      },
+    },
+  },
+  bridgeEnabled: {
+    uid: 2,
+    refs: {
+      2: { type: "boolean", meta: { default: DEFAULT_BRIDGE_ENABLED, volatile: true } },
+    },
+  },
+};
 
 /**
- * Live schema node handed to `ctx.settings.register`.
- * - Callable: the service resolves candidate values with `schema(data)`.
- * - `toJSON()`: returns a deep copy of the frozen envelope for the wire
- *   (`settings.describe`), which the browser rehydrates with its own copy.
- * - `type` / `dict`: redaction-walk shape (no secrets declared).
- * @type {Function & {type: string, dict: object, meta: object, toJSON: () => object}}
+ * One leaf of the form-projection walk: the flat shape dsh-settings reads
+ * (`meta.volatile`, `type`) plus `toJSON()` so `plainSchema` can rehydrate a
+ * real schemastery instance from the leaf's own envelope.
  */
-const StatusSchema = Object.assign(resolveSection, {
+const IconModeLeaf = {
+  type: "union",
+  list: [],
+  meta: { default: DEFAULT_MODE, volatile: true },
+  toJSON: () => JSON.parse(JSON.stringify(LEAF_ENVELOPES.iconMode)),
+};
+const BridgeEnabledLeaf = {
+  type: "boolean",
+  meta: { default: DEFAULT_BRIDGE_ENABLED, volatile: true },
+  toJSON: () => JSON.parse(JSON.stringify(LEAF_ENVELOPES.bridgeEnabled)),
+};
+
+/**
+ * The plugin's Config schema, attached to the bundle module as the
+ * `Config` export. Consumed by:
+ *   - the cordis registry: `Config["~standard"].validate(config)` before
+ *     every activation (and on volatile commits);
+ *   - dsh-settings: `settings.describe` projects the settings form from
+ *     `type`/`dict`/`meta` and publishes `Config.toJSON()` on the wire;
+ *     both fields are volatile, so a write hot-commits into the running
+ *     fiber (no remount) and emits `loader/volatile-update`.
+ * @type {{
+ *   "~standard": {version: number, vendor: string, validate: (data: unknown) => object},
+ *   type: string, dict: object, meta: object,
+ *   toJSON: () => object,
+ * }}
+ */
+export const Config = {
+  "~standard": { version: 1, vendor: "schemastery", validate: validateSection },
   type: "object",
-  dict: {
-    iconMode: { type: "union", list: [], meta: { default: DEFAULT_MODE } },
-    bridgeEnabled: { type: "boolean", meta: { default: DEFAULT_BRIDGE_ENABLED } },
-  },
+  dict: { iconMode: IconModeLeaf, bridgeEnabled: BridgeEnabledLeaf },
   meta: {
     default: {
       iconMode: DEFAULT_MODE,
@@ -126,7 +258,7 @@ const StatusSchema = Object.assign(resolveSection, {
     },
   },
   toJSON: () => JSON.parse(JSON.stringify(ENVELOPE)),
-});
+};
 
 /**
  * Build the source gate for the bridge route.
@@ -150,24 +282,27 @@ function makeSourceGate(bindHost) {
 }
 
 /**
- * Start the status bridge and wire its data taps. Starts ENABLED; the
- * settings watcher (see `apply`) applies the persisted value right after.
+ * Start the status bridge and wire its data taps.
  * @param ctx - root host context (untagged scope: receives every
  *   agent-scoped event).
  * @param agents - the live `agents` registry service.
  * @param webServer - the running web server service.
+ * @param enabled - initial bridge toggle (from the entry Config).
  * @returns `{ setEnabled(enabled) }`.
  */
-function startBridge(ctx, agents, webServer) {
+function startBridge(ctx, agents, webServer, enabled) {
   const bridge = new StatusBridge();
 
-  // --- running count: recompute from the registry on any change ---------
+  // --- running set: recompute from the registry on any change -----------
+  // Pass the id array (not just a count): the snapshot's `runningIds` is part
+  // of the documented contract and the desktop tray lists which sessions are
+  // busy. `setRunning(ids)` derives the count from the array length.
   const recomputeRunning = () => {
-    let n = 0;
+    const ids = [];
     for (const agent of agents.list()) {
-      if (agent.status === "running") n += 1;
+      if (agent.status === "running") ids.push(agent.id);
     }
-    bridge.setRunning(n);
+    bridge.setRunning(ids);
   };
   const offCreated = ctx.on("agent/created", recomputeRunning);
   const offDisposed = ctx.on("agent/disposed", recomputeRunning);
@@ -201,7 +336,7 @@ function startBridge(ctx, agents, webServer) {
   // --- route on the running web server -----------------------------------
   const gate = makeSourceGate(webServer.host);
   let disposeRoute = null;
-  let enabled = true;
+  let live = Boolean(enabled);
   const installRoute = () => {
     disposeRoute = webServer.register({
       kind: "prefix",
@@ -209,7 +344,7 @@ function startBridge(ctx, agents, webServer) {
       handler: makeRouteHandler(bridge, { isAllowed: gate }),
     });
   };
-  installRoute();
+  if (live) installRoute();
 
   ctx.effect(
     () => () => {
@@ -225,9 +360,9 @@ function startBridge(ctx, agents, webServer) {
   );
 
   function setEnabled(next) {
-    if (next === enabled) return;
-    enabled = next;
-    if (enabled) installRoute();
+    if (next === live) return;
+    live = next;
+    if (live) installRoute();
     else if (disposeRoute) {
       disposeRoute();
       disposeRoute = null;
@@ -244,36 +379,52 @@ function startBridge(ctx, agents, webServer) {
  * The bridge is a nested plugin that injects the `agents` + `webServer`
  * services: Cordis activates a plugin only when its injected services are
  * all present, so this fiber runs exactly in the web composition and is
- * simply skipped elsewhere. (A plain `ctx.get("agents")` returns `undefined`
- * for an undeclared service — the v0.5.0 bug that kept the route from ever
- * mounting.)
+ * simply skipped elsewhere.
  *
- * The `session-status` settings namespace is registered INSIDE the bridge
- * fiber, so it has exactly one owner: the settings service fails loud on a
- * duplicate registration, and the namespace is only meaningful where the
- * browser consumer (状态监控 section) exists — i.e. the same web
- * composition. A composition with the services but no settings provider
- * still gets the bridge, running at its default (enabled) toggle.
- * @param ctx - Host context for the session-status plugin.
+ * Config plumbing (0.2.0): the entry's Config values arrive as `apply`'s
+ * second argument (validated references); the volatile hot-toggle arrives
+ * as `loader/volatile-update` on this (entry) context, because the Loader
+ * filters that event to the owning fiber. The settings page policy
+ * (`configure({auto: false})`) suppresses the auto-generated form page —
+ * the dedicated 状态监控 section owns the UI.
+ * @param ctx - entry host context for the session-status plugin.
+ * @param config - validated entry config (`iconMode`, `bridgeEnabled` as
+ *   volatile references).
  */
-export function apply(ctx) {
+export function apply(ctx, config) {
+  // (1) Volatile hot-toggle. The reference object is stable (the Loader
+  // updates it in place), so reading it at event time is always live. The
+  // listener must sit on the ENTRY fiber's context — a nested fiber's
+  // listener is filtered out of `loader/volatile-update`.
+  let setBridgeEnabled = null;
+  ctx.on("loader/volatile-update", () => {
+    if (setBridgeEnabled) {
+      setBridgeEnabled(
+        readField(config && config.bridgeEnabled, DEFAULT_BRIDGE_ENABLED)
+      );
+    }
+  });
+
+  // (2) The bridge itself (soft: web compositions only).
   ctx.inject(["agents", "webServer"], (bridgeCtx) => {
+    // Page policy: the dedicated 状态监控 section owns the UI; suppress the
+    // generic auto-generated form page. Owned by the bridge fiber (absent
+    // where the bridge is absent — mirroring the pre-0.2.0 namespace
+    // ownership). `configure` returns a disposer, so it rides an effect —
+    // when the fiber re-runs on a service change the old policy unwinds
+    // before the new one registers (a double registration would throw).
+    bridgeCtx.inject(["settings"], (settingsCtx) => {
+      settingsCtx.effect(() =>
+        settingsCtx.settings.configure({ auto: false }, ctx.fiber)
+      );
+    });
     const bridgeApi = startBridge(
       bridgeCtx,
       bridgeCtx.agents,
-      bridgeCtx.webServer
+      bridgeCtx.webServer,
+      readField(config && config.bridgeEnabled, DEFAULT_BRIDGE_ENABLED)
     );
-    // Settings namespace (the browser binds the same namespace for the
-    // tab-icon mode; `bridgeEnabled` is consumed host-side, hot-reloaded).
-    bridgeCtx.inject(["settings"], (settingsCtx) => {
-      const scope = settingsCtx.settings.register(NS, StatusSchema);
-      const applyEnabled = () => {
-        const value = scope.get();
-        bridgeApi.setEnabled(Boolean(value.bridgeEnabled));
-      };
-      applyEnabled();
-      scope.watch(applyEnabled);
-    });
+    setBridgeEnabled = (value) => bridgeApi.setEnabled(value);
   });
 }
 
@@ -289,6 +440,5 @@ export {
   DEFAULT_MODE,
   MODES,
   NS as SETTINGS_NAMESPACE,
-  StatusSchema,
   makeSourceGate,
 };

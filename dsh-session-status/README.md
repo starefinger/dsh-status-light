@@ -1,9 +1,4 @@
-# dsh-status-light (dsh-session-status)
-
-> npm package: **`dsh-status-light`** · repo folder / local install path:
-> `dsh-session-status/` · settings namespace + loader row id: `session-status`.
-> The npm name `dsh-session-status` is taken by an unrelated project, so the
-> published package is `dsh-status-light`.
+# dsh-session-status
 
 DeepSeek Harness Web GUI plugin: a persistent red/yellow/green status dot in the
 sidebar footer, plus a matching colored browser-tab favicon (the title is left
@@ -19,11 +14,41 @@ process running, or nothing going on.
 Precedence is `red > yellow > green`: a session that is running *and* waiting on
 an approval shows red.
 
-> ⚠️ **DSH version compatibility (v0.5.1)** — **known issue: does not work on
-> DSH 0.2.0.** On DSH 0.2.0 the plugin fails to load and can prevent the web
-> GUI from starting at all; on DSH **0.1.5** it works normally. Until a
-> compatible release is out, stay on DSH 0.1.5, or remove the plugin
-> (`dsh plugin --profile web remove dsh-status-light`) and restart.
+## DSH 0.2.0 compatibility (v0.6.0)
+
+This version tracks the DSH 0.2.0 settings rearchitecture:
+
+- **Settings model.** Forms are now *projected automatically* from each
+  bundle plugin's `Config` schema (the pre-0.2.0 `settings.register` /
+  `scope.get` / `scope.watch` namespace API is gone). The plugin therefore
+  exports a zero-dependency hand-rolled `Config` node that satisfies all four
+  surfaces DSH touches: `~standard.validate` (sync, volatile fields resolve to
+  cosmokit-protocol live references), the flat `type`/`dict`/`meta` walk, a
+  per-leaf `toJSON()`, and the root `toJSON()` wire envelope (schemastery
+  3.18.4 serialization). The namespace id is the Loader entry id
+  (`session-status`). The `~standard` face carries `version: 1` and
+  `vendor: "schemastery"` exactly like a real schemastery schema — required:
+  the Loader only runs its schema-aware volatile diff for that vendor tag,
+  and without it a volatile-only write would be misread as an ordinary config
+  change and remount the whole entry instead of committing in place.
+- **Client contract.** `uiSession.pendingInteractions` is replaced by the
+  unified `uiSession.sessionStatus` per-session status map; the settings
+  surface moves from `settingsScope` to the shared `configForms` service
+  (`configForms.get("session-status")` → `getSnapshot` / `subscribe` / `set`).
+- **Hot toggle.** `iconMode` and `bridgeEnabled` are declared volatile: a
+  settings write commits in place into the running entry (no remount) and the
+  plugin reacts to `loader/volatile-update`.
+- **Legacy values.** A pre-0.2.0 global `settings.yaml` `session-status:`
+  section is migrated automatically on first boot (`importLegacyDocument` —
+  the old section id matches the entry id); otherwise the defaults
+  (`replace` / bridge on) apply.
+- **Loading.** A *first install* of the bundle is picked up by the running
+  web server **without a restart** (`patchReload: live` watches the profile
+  manifest; a changed `dsh.profile.bundles` list triggers a live entry-tree
+  reconcile — verified against a running DSH 0.2.0-rc.2). *Upgrading* an
+  already-listed bundle to a new version, and *host-side code changes* to an
+  already-active entry, do need a `dsh web` restart (the bundle list is
+  unchanged, and the host module is cached in the ESM loader).
 
 ## Data source (zero extra dependencies)
 
@@ -33,9 +58,11 @@ Reads only two standard client stores (no RPC, no added deps):
   `byId[sessionId].running` (the host agent-running bit, kept live by
   `api-session/status` frames). The sidebar dot reads it through the
   `useSessions` hook; the tab favicon subscribes to the same store directly.
-- `uiSession.pendingInteractions` (a `{getSnapshot, subscribe}` store written by
-  `dsh-client-ui-approval` / `dsh-client-ui-user-questions`) → the set of sessions
-  awaiting a human. `map.size > 0` means blocked.
+- `uiSession.sessionStatus` (a `{getSnapshot, subscribe}` store — the 0.2.0
+  *unified* per-session status map `{running, pendingInteraction,
+  completionUnread}`, published by `dsh-client-ui-approval` /
+  `dsh-client-ui-user-questions` via `registerPendingInteraction`) → any entry
+  carrying a `pendingInteraction` means blocked.
 
 The status is **global** across all sessions, and stays visible even with no
 session selected.
@@ -74,18 +101,22 @@ modes:
 | **Replace the original icon** (default) | a solid state dot | the existing v0.2.1 behavior — the original DSH icon is hidden |
 | **Keep the original icon** | the original DSH logo + a state dot at its bottom-right | composed in a *single* inline SVG (the logo path is inlined — no network); the logo fill adapts to light/dark via `prefers-color-scheme`, and the dot has a white ring so it stays legible on any background |
 
-- The choice takes effect immediately and **persists** to the DSH settings
-  document (`$DSH_HOME/settings.yaml`, the host `session-status` namespace,
-  hot-reloaded by the `dsh-settings-file` provider) — it survives across tabs and
-  restarts.
-- It rides DSH's native settings chain: the host half does
-  `ctx.settings.register("session-status", …)` (the schema is a hand-rolled,
-  dependency-free schemastery-compatible node — a callable resolver plus a frozen
-  `toJSON()` envelope byte-identical to real schemastery serialization, which the
-  browser rehydrates with its own vendored copy); the browser half binds
-  `ctx.settingsScope.bind({ namespace })`, reads the scope with
-  `useSyncExternalStore`, and writes with `scope.set("iconMode", …)`
-  (revision-fenced — concurrent writes reject rather than clobber).
+- The choice takes effect immediately and **persists** to the profile's
+  settings document (the `session-status` section of the profile patch — the
+  pre-0.2.0 global `settings.yaml` section is migrated automatically on first
+  boot) — it survives across tabs and restarts.
+- It rides DSH's native settings chain (0.2.0 model): the host half exports a
+  bundle plugin `Config` schema — a hand-rolled, dependency-free
+  schemastery-compatible node (a `~standard.validate` that resolves volatile
+  fields to live references, flat `type`/`dict`/`meta` walk shape, and a frozen
+  `toJSON()` envelope byte-identical to schemastery 3.18.4 serialization, which
+  the browser rehydrates with its own vendored copy). The settings service
+  *projects the form automatically* from that schema (no manual namespace
+  registration — the pre-0.2.0 `settings.register` is gone; the namespace id IS
+  the Loader entry id). The browser half reads the form through the shared
+  `ctx.configForms.get("session-status")` service (`getSnapshot()` /
+  `subscribe()` / `set("iconMode", …)`, the same external-store face as the old
+  scope), tracking it with `useSyncExternalStore`.
 - **Graceful degradation**: if the settings base layer is absent (or the host half
   has not taken effect across a restart yet, so the scope is not ready), the
   sidebar dot and favicon keep working (defaulting to the *replace* mode) and the
@@ -98,16 +129,19 @@ shows a **Status monitoring** (状态监控) entry with **zero shell changes** (
 section id falls back to the gear glyph). The page content is a header (title +
 intro) plus the **tab-icon row** and, since v0.5.0, a **desktop status bridge**
 toggle row (see below); the browser half reaches `locale` /
-`settingsScope` through `ctx.get` (soft access), so a composition without them
-simply has no page. Both rows live in the same `session-status` namespace; the
-bridge field is a top-level `bridgeEnabled` boolean so the client scope can
+`configForms` through `ctx.get` (soft access), so a composition without them
+simply has no page. Both rows live in the same `session-status` entry config;
+the bridge field is a top-level `bridgeEnabled` boolean so the client form can
 write it with its single-level `set()`.
 
 Implementation note: the favicon logic subscribes to the **same** two standard
 stores the sidebar dot reads (no React, no polling), so the two never disagree;
 the `ctx.effect` disposer unsubscribes and **restores the original favicon** on
 plugin disposal / HMR swap; each browser tab updates its own favicon
-independently.
+independently. The shell's `index.html` registers **one icon `<link>` per color
+scheme** (`media="(prefers-color-scheme: …)"`) — the browser honors only the
+scheme-matching one — so the writer updates **all** icon links and restores
+each element's own original href.
 
 ## Desktop status bridge (v0.5.0)
 
@@ -154,32 +188,35 @@ service the plugin has *not* declared in `inject` (the Cordis resolution
 model: property reads require the declaration; undeclared lookups resolve to
 nothing). The v0.5.0 code read both services that way, so its guard
 early-returned and the route never mounted on any boot — fixed by the
-nested-plugin wiring. The `session-status` settings namespace is registered
-inside the same fiber (single owner; the settings service rejects duplicate
-registrations).
+nested-plugin wiring. The settings **page policy**
+(`settings.configure({auto: false})` — suppresses the auto-generated form page,
+since the dedicated section owns the UI) is registered inside the same fiber
+(single owner; the settings service rejects duplicate policies).
 
 **Enable / disable.** Toggle it from **Settings → 状态监控 → 桌面状态桥**
-(persisted as `bridgeEnabled`, hot-reloaded by the settings watcher). The
-endpoint appears/disappears immediately; the host half still loads once at
-`dsh web` boot, so a fresh install needs a restart.
+(persisted as the volatile `bridgeEnabled` config field). Because the field is
+declared **volatile**, a settings write is committed *in place* into the running
+entry's config references and the Loader dispatches `loader/volatile-update` to
+the owning fiber — the route installs/uninstalls **immediately, with no remount
+of the entry** (this is the 0.2.0 replacement for the old settings watcher).
 
-**The tray tool** lives **outside** this plugin, in the source repo's `desktop/`
-folder (a home for all desktop versions; the Python one is
-`desktop/desktop-python/`) — a single `status_tray.py` (Python + pystray) that
-streams the SSE endpoint and recolors a 🔴/🟡/🟢 tray icon (⚪ gray when the
-bridge is unreachable). It is **not part of the npm package** — fetch it from
-the source repo and see its README to run it. The Node side of the bridge has
-**zero dependencies** (built-ins only); the Python side needs only pystray +
-Pillow.
+**The tray tool** lives **outside** this plugin, at the repo's
+[`../desktop/`](../desktop/) (a home for all desktop versions; the Python one
+is [`../desktop/desktop-python/`](../desktop/desktop-python/)) — a single
+`status_tray.py` (Python + pystray) that streams the SSE endpoint and recolors
+a 🔴/🟡/🟢 tray icon (⚪ gray when the bridge is unreachable). See
+[`../desktop/desktop-python/README.md`](../desktop/desktop-python/README.md) to
+run it. The Node side of the bridge has **zero dependencies** (built-ins only);
+the Python side needs only pystray + Pillow.
 
 ## Layout
 
 ```
-dsh-session-status/          ← repo folder name (npm package: dsh-status-light)
+dsh-session-status/
 ├── package.json          # dsh.bundle.patch + dsh.client{platform:web}
 ├── cordis.patch.yml      # host Loader row (- insert: {id, name})
 └── lib/
-    ├── index.js          # host half: settings namespace + the desktop status bridge
+    ├── index.js          # host half: plugin Config (settings) + the desktop status bridge
     ├── bridge.js         # the bridge: StatusBridge state machine + the HTTP/SSE route
     └── client.js         # browser half: window.__ModuleLoader__.load(...) CJS bundle
 ```
@@ -191,78 +228,39 @@ plugins (no esbuild/tsdown build step); the only runtime module it requires is
 
 ## Install
 
-> `dsh plugin` is a thin pnpm forwarder: it runs `pnpm add <spec>` in your
-> profile directory (`$DSH_HOME/profiles/web`) and auto-appends the package to
-> `dsh.profile.bundles` when it declares `dsh.bundle` — wiring the host and
-> browser halves at once.
-
-### From npm (published)
-
-```sh
-dsh plugin --profile web add dsh-status-light
-```
-
-Pin a version (`dsh-status-light@0.5.1`) or use a custom registry
-(`add --registry <url> dsh-status-light`). To upgrade later:
-`dsh plugin --profile web update dsh-status-light`.
-
-### From git
-
-```sh
-dsh plugin --profile web add github:<owner>/dsh-session-status   # default branch
-dsh plugin --profile web add github:<owner>/dsh-session-status#v0.5.1
-```
-
-> If the repo ever adds a build `prepare` script, pnpm blocks install scripts
-> by default — `dsh plugin` prints the exact `allowBuilds` key to add to the
-> profile's `pnpm-workspace.yaml`; add it and re-run. (The published package
-> ships prebuilt: no build step, so this never fires for the npm install.)
-
-### From a local checkout (development)
-
 ```sh
 dsh plugin --profile web add /path/to/dsh-session-status
 ```
 
-Installs into the profile `node_modules` (as a `link:`) — edit the repo, the
-profile picks it up on the next `dsh web` boot (HMR hot-swaps only the already
-known browser bundle; see Activation below).
+Installs into the profile `node_modules` (as a `link:`) and auto-appends
+`dsh-session-status` to `dsh.profile.bundles` — wiring both halves at once.
 
-## Activation (important)
+## Activation (live — verified on DSH 0.2.0-rc.2)
 
-A *new* bundle is discovered only at **`dsh web` boot** (the `dsh-client-hmr`
-`rebuilt` frame hot-swaps only already-known entries; `graph` frames are no-ops;
-`patchReload: live` only watches the two `cordis.patch.yml` files). So restart the
-web process to see the indicator:
+A **first install needs no restart.** With `patchReload: live` the running web
+server watches the profile manifest (`package.json`): the changed
+`dsh.profile.bundles` list triggers a live Loader entry-tree reconcile, which
+activates the host half (bridge route + settings policy) and re-scans the client
+graph — the sidebar dot, the tab favicon, and the `/session-status` endpoint all
+appear in the already-running instance seconds after the install.
 
-```sh
-dsh --profile web
-```
+What still needs a **`dsh web` restart** (`dsh --profile web`):
+
+- **upgrading** an already-listed bundle to a new version (the bundle list is
+  unchanged, so the manifest watcher stays quiet), and
+- **host-side code changes** to an already-active entry — the host module is
+  cached in the ESM loader (the HMR module-root watch is opt-in and off in the
+  shipped web profile).
+
+Client-side bundle changes are different: the `client-hmr` host transport
+stat-polls every client bundle in the graph (~500 ms), rebuilds the combo on
+change, and pushes a `graph` frame over `/plugins/events`, which the browser
+half hot-swaps **in the open page**.
 
 > Note: restarting ends any session currently running inside that web process.
-
-## Publishing
-
-The package is dependency-free and prebuilt (the browser bundle is hand
-authored), so publishing is a plain npm publish of the repo folder:
-
-```sh
-cd dsh-session-status
-npm publish --access public        # first publish: claim the name
-npm version patch && npm publish   # subsequent releases
-```
-
-`files` limits the tarball to `lib/`, `cordis.patch.yml`, and the two READMEs.
-The name is `dsh-status-light` because `dsh-session-status` is already taken
-on npm by an unrelated project.
 
 ## Uninstall
 
 ```sh
-dsh plugin --profile web remove dsh-status-light   # npm / git install
-# (local-path installs: remove dsh-session-status, the folder's package name
-#  is irrelevant — the dependency is keyed by the resolved spec's package name)
+dsh plugin --profile web remove dsh-session-status
 ```
-
-Removal is reconciled against installed state: the entry drops out of
-`dsh.profile.bundles` automatically.

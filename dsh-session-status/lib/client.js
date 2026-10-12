@@ -51,10 +51,12 @@ window.__ModuleLoader__.load({
     }
 
     // ── shared state core (sidebar dot + tab favicon) ──────────────────────
-    // Derive the traffic-light state from the two standard Session stores:
+    // Derive the traffic-light state from the two standard Session stores
+    // (0.2.0 contract):
     //   sessions.list                    -> byId[sessionId].running (live agent bit)
-    //   uiSession.pendingInteractions    -> Map<sessionId, interaction> (needs a human)
-    // blocked   = any session awaiting human input (approval / question / plan-review)
+    //   uiSession.sessionStatus          -> Map<sessionId, {running, pendingInteraction,
+    //                                                  completionUnread}> (unified status)
+    // blocked   = any session carrying a pendingInteraction (approval / question / plan-review)
     // running   = some session's agent is actively running
     //   state = blocked>0 ? red : running ? yellow : green
     function toState(blocked, running) {
@@ -62,8 +64,13 @@ window.__ModuleLoader__.load({
       if (running) return "running";
       return "idle";
     }
-    function deriveState(list, pending) {
-      var blocked = pending ? pending.size : 0;
+    function deriveState(list, statusMap) {
+      var blocked = 0;
+      if (statusMap) {
+        statusMap.forEach(function (st) {
+          if (st && st.pendingInteraction !== undefined) blocked += 1;
+        });
+      }
       var running = 0;
       var ids = list && list.ids ? list.ids : [];
       var byId = list ? list.byId : void 0;
@@ -120,19 +127,41 @@ window.__ModuleLoader__.load({
       return "data:image/svg+xml," + encodeURIComponent(svg);
     }
     function installTabStatus(doc) {
-      var link = doc.querySelector('link[rel="icon"], link[rel="shortcut icon"]');
-      var originalHref = link ? link.getAttribute("href") : null;
+      // The web shell registers one <link rel="icon"> PER COLOR SCHEME
+      // (media="(prefers-color-scheme: dark|light)"); the browser only honors
+      // the link whose media matches the active scheme, so EVERY icon link
+      // must carry the state icon — updating just the first match leaves the
+      // other scheme showing the original favicon. Links are re-queried per
+      // write (a pass with no links is a retry-able no-op: `applied` stays
+      // null, so a later pass still applies); each element's original href is
+      // captured once for restoration on dispose.
+      var originals = new Map(); // icon link element -> original href attribute
       var applied = null;
+      var iconLinks = function () {
+        return Array.prototype.slice.call(
+          doc.querySelectorAll('link[rel="icon"], link[rel="shortcut icon"]')
+        );
+      };
       var apply = function (state, mode) {
         var key = state + "/" + (mode === "combined" ? "combined" : "replace");
-        if (applied === key || !link) return;
+        if (applied === key) return;
+        var list = iconLinks();
+        if (list.length === 0) return;
         applied = key;
-        link.href = faviconFor(state, mode === "combined" ? "combined" : "replace");
+        var href = faviconFor(state, mode === "combined" ? "combined" : "replace");
+        for (var i = 0; i < list.length; i++) {
+          if (!originals.has(list[i])) {
+            originals.set(list[i], list[i].getAttribute("href"));
+          }
+          list[i].href = href;
+        }
       };
       var dispose = function () {
-        if (applied === null || !link) return;
         applied = null;
-        link.href = originalHref == null ? "" : originalHref;
+        originals.forEach(function (href, link) {
+          link.href = href == null ? "" : href;
+        });
+        originals.clear();
       };
       return { apply: apply, dispose: dispose };
     }
@@ -143,14 +172,16 @@ window.__ModuleLoader__.load({
     // collapsed rail keep the bare dot (the title tooltip still carries the
     // full state).
     function StatusIndicator(props) {
+      // 0.2.0 standard kit: useSessions + useSessionStatus (the per-session
+      // status map). Absent either degrades that part of the state.
       var useSessions = props.useSessions;
-      var useSessionPendingInteraction = props.useSessionPendingInteraction;
+      var useSessionStatus = props.useSessionStatus;
       var wide = props.wide;
       var list = typeof useSessions === "function" ? useSessions(function (state) { return state; }) : void 0;
-      var pending = typeof useSessionPendingInteraction === "function"
-        ? useSessionPendingInteraction(function (snapshot) { return snapshot; })
+      var statusMap = typeof useSessionStatus === "function"
+        ? useSessionStatus(function (snapshot) { return snapshot; })
         : void 0;
-      var derived = deriveState(list, pending);
+      var derived = deriveState(list, statusMap);
       var title = titleFor(derived.state, derived.blocked, derived.running);
       return react.createElement("span", {
         "className": "dss_root" + (wide ? "" : " dss_rootCompact"),
@@ -302,16 +333,16 @@ window.__ModuleLoader__.load({
     }
 
     // Client plugin body: register the sidebar dot, the tab status, and the
-    // settings row.
-    // Service gate: the three v0.2.x services keep the indicator alive in every
-    // web composition. The settings surface is layered ON with soft access —
-    // `ctx.get(...)` is the facade's optional lookup (no declaration required,
-    // and — unlike a `ctx.name` property read — it returns undefined instead of
-    // throwing for an undeclared service), so a composition without the settings
-    // or locale base still gets the full dot + favicon, just without the row.
-    // `bind()` on the traceable proxy returned by `ctx.get("settingsScope")`
-    // still binds the scope's effects to THIS plugin's fiber (the proxy binds
-    // `this.ctx` to the caller at call time), matching the shipped theme row.
+    // settings section.
+    // Service gate: the three 0.2.0 services (slots/sessions/uiSession) keep
+    // the indicator alive in every web composition. The settings surface is
+    // layered ON with soft access — `ctx.get(...)` is the facade's optional
+    // lookup (no declaration required, and — unlike a `ctx.name` property read
+    // — it returns undefined instead of throwing for an undeclared service),
+    // so a composition without the settings or locale base still gets the full
+    // dot + favicon, just without the row. `configForms.get(entryId)` returns
+    // the owning plugin's projected Config form; its getSnapshot/subscribe/set
+    // mirror the pre-0.2.0 settings-scope face 1:1.
     var inject = ["slots", "sessions", "uiSession"];
     function apply(ctx) {
       ctx.slots.inject("sidebar.footer.action", function () {
@@ -320,24 +351,26 @@ window.__ModuleLoader__.load({
           StatusIndicator
         );
       });
-      // Optional settings surface: bind the `session-status` namespace scope
-      // when the settings base is mounted; the row + scope-following favicon
-      // mode are registered only when BOTH the locale and settings services
-      // are present.
-      var scope = null;
+      // Optional settings surface: the 0.2.0 preferences live in the OWNING
+      // plugin's Config; the shared configForms service projects them into a
+      // per-entry form (getSnapshot/subscribe/set — the same external-store
+      // face the pre-0.2.0 settingsScope had). The row + form-following
+      // favicon mode are registered only when BOTH the locale and
+      // config-forms services are present.
+      var form = null;
       var locale = null;
       try {
         locale = ctx.get ? ctx.get("locale") : void 0;
-        var settingsScope = ctx.get ? ctx.get("settingsScope") : void 0;
-        if (settingsScope && settingsScope.bind) {
-          scope = settingsScope.bind({ namespace: SETTINGS_NS });
+        var configForms = ctx.get ? ctx.get("configForms") : void 0;
+        if (configForms && configForms.get) {
+          form = configForms.get(SETTINGS_NS);
         }
       } catch (error) {
-        scope = null;
+        form = null;
         locale = null;
       }
       function readMode() {
-        return modeValue(scope);
+        return modeValue(form);
       }
       // Tab status: subscribe to the SAME two standard stores the sidebar dot
       // reads, plus the settings scope, so both stay in lockstep. The effect
@@ -348,33 +381,34 @@ window.__ModuleLoader__.load({
         var read = function () {
           return deriveState(
             ctx.sessions.list.getSnapshot(),
-            ctx.uiSession.pendingInteractions.getSnapshot()
+            ctx.uiSession.sessionStatus.getSnapshot()
           ).state;
         };
         var disposeList = ctx.sessions.list.subscribe(function () {
           tab.apply(read(), readMode());
         });
-        var disposePending = ctx.uiSession.pendingInteractions.subscribe(function () {
+        var disposeStatus = ctx.uiSession.sessionStatus.subscribe(function () {
           tab.apply(read(), readMode());
         });
-        var disposeScope = scope && scope.subscribe
-          ? scope.subscribe(function () {
+        var disposeForm = form && form.subscribe
+          ? form.subscribe(function () {
             tab.apply(read(), readMode());
           })
           : null;
         tab.apply(read(), readMode());
         return function () {
           disposeList();
-          disposePending();
-          if (disposeScope) disposeScope();
+          disposeStatus();
+          if (disposeForm) disposeForm();
           tab.dispose();
         };
       }, "dsh-session-status: browser tab status");
-      // Settings → 状态监控: dictionaries + the section entry. Registered only
-      // when the settings scope is bound (the settings base is mounted); the
-      // section's `locale` seat hands StatusSection a bound `t`, and its
-      // `label` thunk feeds the nav rail (resolved via resolveSlotLabel).
-      if (scope && locale && locale.register) {
+      // Settings → 状态监控: dictionaries + the section entry. Registered
+      // only when the config form is bound (the settings base is mounted);
+      // the section's `locale` seat hands StatusSection a bound `t`, and its
+      // `label` thunk feeds the nav rail (re-evaluated per read, so the nav
+      // row follows the active locale without re-registration).
+      if (form && locale && locale.register) {
         // One dictionary namespace feeds BOTH the nav label and the section
         // body (the section entry's `locale` seat hands the component a bound
         // `t`; the row reads the same keys), matching the shipped sections.
@@ -418,7 +452,7 @@ window.__ModuleLoader__.load({
               label: function () { return tNav("nav"); },
               locale: SETTINGS_SECTION_NS,
               inject: function () {
-                return { tabIconScope: scope };
+                return { tabIconScope: form };
               }
             },
             StatusSection

@@ -1,8 +1,4 @@
-# dsh-status-light（dsh-session-status）
-
-> npm 包名：**`dsh-status-light`** · 仓库目录 / 本地安装路径：`dsh-session-status/` ·
-> 设置命名空间 + Loader 行 id：`session-status`。npm 上的 `dsh-session-status`
-> 已被一个不相关的项目占用，所以发布包名为 `dsh-status-light`。
+# dsh-session-status
 
 DeepSeek Harness Web GUI 插件：在侧栏底部常驻一个红/黄/绿状态灯，并把浏览器
 标签页的 favicon 换成同色圆点（标题保持原生不变），一眼看出当前 DSH 是否有
@@ -19,10 +15,35 @@ DeepSeek Harness Web GUI 插件：在侧栏底部常驻一个红/黄/绿状态�
 判定优先级：`红 > 黄 > 绿`。当某会话既在运行又在等审批时，按规则显示为红色
 （阻塞优先），避免把"需要人工"误报成"仅运行中"。
 
-> ⚠️ **DSH 版本兼容性（v0.5.1）——已知问题：在 DSH 0.2.0 上无法工作。**
-> DSH 0.2.0 下插件加载失败，并可能导致 **web GUI 无法启动**；DSH **0.1.5**
-> 下运行正常。在发布兼容版本之前，请继续使用 DSH 0.1.5，或先移除插件
-> （`dsh plugin --profile web remove dsh-status-light`）再重启。
+## DSH 0.2.0 兼容（v0.6.0）
+
+本版本跟进 DSH 0.2.0 的设置体系重构：
+
+- **设置模型**：表单现在由各 bundle 插件的 `Config` schema **自动投影**
+  （0.2.0 之前的 `settings.register` / `scope.get` / `scope.watch`
+  命名空间 API 已移除）。插件因此导出一个零依赖手写 `Config` 节点，满足
+  DSH 接触的全部四个面：`~standard.validate`（同步，volatile 字段解析为
+  cosmokit 协议的活引用）、扁平 `type`/`dict`/`meta` 走查、叶子 `toJSON()`、
+  以及根 `toJSON()` 线格式信封（schemastery 3.18.4 序列化）。命名空间 id
+  即 Loader 条目 id（`session-status`）。`~standard` 面与真实 schemastery
+   schema 一致地携带 `version: 1` 与 `vendor: "schemastery"`——这是必需的：
+   Loader 只对带该 vendor 标记的 schema 执行感知 volatile 的 diff，缺失时
+   仅 volatile 字段的写入会被误判为普通配置变更，整体重挂载条目而非就地提交。
+- **客户端契约**：`uiSession.pendingInteractions` 被统一的
+  `uiSession.sessionStatus` 按会话状态映射取代；设置面从 `settingsScope`
+  迁移到共享 `configForms` 服务（`configForms.get("session-status")` →
+  `getSnapshot` / `subscribe` / `set`）。
+- **热切换**：`iconMode` 与 `bridgeEnabled` 声明为 volatile——设置写入就地
+  提交进运行中条目（无需重挂载），插件监听 `loader/volatile-update` 响应。
+- **旧值迁移**：0.2.0 之前的全局 `settings.yaml` 中 `session-status:` 段
+  会在首次启动时自动迁移（`importLegacyDocument`——旧段 id 与条目 id
+  一致）；否则按默认值（`replace` / 桥开启）生效。
+- **加载**：*首次安装* bundle 无需重启——运行中的 web 服务会感知
+  profile 清单变化（`patchReload: live` 监视 `package.json`，
+  `dsh.profile.bundles` 列表变化触发条目树实时调和；已在运行中的
+  DSH 0.2.0-rc.2 上实测验证）。*已列 bundle 的版本升级*与*已激活条目
+  的宿主侧代码改动*仍需重启 `dsh web`（bundle 列表未变，且宿主模块
+  被 ESM loader 缓存）。
 
 ## 数据来源（零额外依赖）
 
@@ -31,10 +52,12 @@ DeepSeek Harness Web GUI 插件：在侧栏底部常驻一个红/黄/绿状态�
 - `sessions.list`（`SnapshotStore<SessionListState>`）
   → `byId[sessionId].running`：主机侧 Agent 的"运行中"位，由
   `api-session/status` 帧实时更新。侧栏灯经 `useSessions` hook 读取；
-  tab 标题直接 `subscribe`/`getSnapshot` 同一 store。
-- `uiSession.pendingInteractions`（`{getSnapshot, subscribe}` 形态的 store，
-  由 `dsh-client-ui-approval` / `dsh-client-ui-user-questions` 等写入）
-  → 当前等待人工输入的会话集合。`map.size > 0` 即存在阻塞。
+  标签页 favicon 直接 `subscribe`/`getSnapshot` 同一 store。
+- `uiSession.sessionStatus`（`{getSnapshot, subscribe}` 形态的 store ——
+  0.2.0 起**统一**的按会话状态映射 `{running, pendingInteraction,
+  completionUnread}`，由 `dsh-client-ui-approval` /
+  `dsh-client-ui-user-questions` 经 `registerPendingInteraction` 发布）
+  → 任一表项携带 `pendingInteraction` 即存在阻塞。
 
 状态是**全局**的：统计所有会话，而不是只看当前选中会话；即使没有选中任何会话，
 指示灯也常驻显示。
@@ -68,15 +91,19 @@ tooltip。侧栏折叠成 56px 窄轨时只显示圆点（保持原 20px 视觉�
 | **代替原图标**（默认） | 纯色状态圆点 | v0.2.1 的现有行为，原 DSH 图标被隐藏 |
 | **与原图标共存** | 原 DSH logo + 右下角状态圆点 | 合成在**单个**内联 SVG 里（logo 路径内联，零网络请求）；logo 颜色随 `prefers-color-scheme` 自动适配明暗主题，状态圆点外圈白色描边保证任意底色下清晰 |
 
-- 选择即时生效并**持久化**到 DSH 设置文档（`$DSH_HOME/settings.yaml`，宿主侧
-  `session-status` 命名空间，`dsh-settings-file` 提供方热加载）；跨标签页、跨
-  重启保持。
-- 实现走 DSH 原生设置链路：宿主半 `ctx.settings.register("session-status", …)`
-  注册命名空间（schema 为零依赖的手写 schemastery 兼容节点：可调用解析器 +
-  `toJSON()` 冻结信封，信封与真实 schemastery 序列化逐字节一致，客户端用自己的
-  vendored schemastery 无损 rehydrate）；浏览器半 `ctx.settingsScope.bind({namespace})`
-  绑定 scope，行组件用 `useSyncExternalStore` 直读 scope，点击走 `scope.set("iconMode", …)`
-  （revision 围栏写入，冲突不会互相覆盖）。
+- 选择即时生效并**持久化**到 profile 设置文档（profile patch 的
+  `session-status` 段——0.2.0 之前的全局 `settings.yaml` 同名段会在首次启动时
+  自动迁移）；跨标签页、跨重启保持。
+- 实现走 DSH 原生设置链路（0.2.0 模型）：宿主半导出 bundle 插件的 `Config`
+  schema——零依赖的手写 schemastery 兼容节点（`~standard.validate` 同步校验、
+  volatile 字段解析为活引用；扁平 `type`/`dict`/`meta` 走查形状；每个叶子带
+  `toJSON()`；根 `toJSON()` 信封与 schemastery 3.18.4 序列化逐字节一致，
+  客户端用自己的 vendored 拷贝无损 rehydrate）。设置服务**自动**从该 schema
+  投影出表单（无需手工注册命名空间——0.2.0 之前的 `settings.register`
+  已移除；命名空间 id 即 Loader 条目 id）。浏览器半经共享服务
+  `ctx.configForms.get("session-status")` 读取表单（`getSnapshot()` /
+  `subscribe()` / `set("iconMode", …)`，与旧 scope 同形），行组件用
+  `useSyncExternalStore` 直读。
 - **优雅降级**：组合里没有 settings 基础层时（或宿主半尚未随重启生效、scope
   未就绪时），侧栏灯与 favicon 照常工作（默认"代替"模式），设置页不注册 /
   按钮置灰——核心功能从不因设置面缺席而失效。
@@ -85,13 +112,16 @@ tooltip。侧栏折叠成 56px 窄轨时只显示圆点（保持原 20px 视觉�
 页同一槽位，左侧导航栏自动出现「状态监控」入口，未知 section id 回退到齿轮图标，
 **零壳改动**）。页面内容 = 页头（标题 + 说明）+「标签页图标」行 +（v0.5.0 起）
 「桌面状态桥」开关行（见下节）；浏览器半用 `ctx.get` 软访问 `locale` /
-`settingsScope`，缺席时整页不注册（核心指示灯不受影响）。两行同属
-`session-status` 命名空间；桥开关是**顶层**布尔字段 `bridgeEnabled`，
-客户端 scope 用单层 `set()` 即可写入。
+`configForms`，缺席时整页不注册（核心指示灯不受影响）。两行同属
+`session-status` 条目配置；桥开关是**顶层**布尔字段 `bridgeEnabled`，
+客户端表单用单层 `set()` 即可写入。
 
 实现要点：favicon 逻辑直接订阅与侧栏灯**同一对**标准 store，无需轮询，两处
 状态必然一致；`ctx.effect` 的 disposer 在插件卸载 / HMR 重载时自动退订并
-**恢复原 favicon**。多个浏览器标签各自独立更新自己的 favicon。
+**恢复原 favicon**。多个浏览器标签各自独立更新自己的 favicon。壳的
+`index.html` 为**每个配色方案各注册一条** icon `<link>`
+（`media="(prefers-color-scheme: …)"`，浏览器只采用与当前方案匹配的那条），
+因此写入端会更新**全部** icon link，并逐条还原各自的原始 href。
 
 ## 桌面状态桥（v0.5.0）
 
@@ -132,28 +162,32 @@ GET /session-status/stream  → SSE：每次状态变化推一帧 + 15 秒保活
 对插件**未声明**的服务返回 `undefined`（Cordis 的解析模型：属性读取
 要求声明，未声明的查找解析为空）。v0.5.0 的代码正是这么读两个服务的，
 守卫因此提前返回，路由在任何一次启动中都没挂上——已用嵌套插件接线
-修复。`session-status` 设置命名空间注册在同一个 fiber 内（单一属主；
-settings 服务拒绝重复注册）。
+修复。设置**页面策略**（`settings.configure({auto: false})` —— 抑制自动
+生成的表单页，因为专属 section 才是 UI 属主）注册在同一个 fiber 内（单一
+属主；settings 服务拒绝重复策略）。
 
-**开关**：在 **Settings → 状态监控 → 桌面状态桥** 切换（持久化为
-`bridgeEnabled`，由 settings watcher 热加载），端点即时出现/消失；宿主半仍
-只在 `dsh web` 启动时加载一次，因此新装需要重启一次。
+**开关**：在 **Settings → 状态监控 → 桌面状态桥** 切换（持久化为 volatile
+字段 `bridgeEnabled`）。该字段声明为 **volatile**：设置写入会**就地**提交进
+运行中条目的配置引用，Loader 随后向属主 fiber 派发 `loader/volatile-update`
+——路由**即时**安装/卸载，**无需重挂载条目**（这是 0.2.0 对旧
+settings watcher 的替代）。
 
-**托盘工具**位于本插件**之外**——源码仓库的 `desktop/` 目录（所有桌面版本的
-统一目录，Python 版在 `desktop/desktop-python/`）——单个
+**托盘工具**位于本插件**之外**——仓库根目录的 [`../desktop/`](../desktop/)
+（所有桌面版本的统一目录，Python 版在
+[`../desktop/desktop-python/`](../desktop/desktop-python/)）——单个
 `status_tray.py`（Python + pystray），流式读取 SSE 端点并给 🔴/🟡/🟢 托盘图标
-换色（桥不可达时显示 ⚪ 灰色）。它**不在 npm 包内**——请从源码仓库获取，
-运行方法见其 README。桥的 Node 侧**零依赖**（纯内置模块）；
-Python 侧只需 pystray + Pillow。
+换色（桥不可达时显示 ⚪ 灰色）。运行方法见
+[`../desktop/desktop-python/README.md`](../desktop/desktop-python/README.md)。
+桥的 Node 侧**零依赖**（纯内置模块）；Python 侧只需 pystray + Pillow。
 
 ## 文件结构
 
 ```
-dsh-session-status/          ← 仓库目录名（npm 包名：dsh-status-light）
+dsh-session-status/
 ├── package.json          # dsh.bundle.patch + dsh.client{platform:web}
 ├── cordis.patch.yml      # 主机侧 Loader 行（- insert: {id, name}）
 └── lib/
-    ├── index.js          # 主机半：settings 命名空间 + 桌面状态桥
+    ├── index.js          # 主机半：插件 Config（设置）+ 桌面状态桥
     ├── bridge.js         # 状态桥：StatusBridge 状态机 + HTTP/SSE 路由
     └── client.js         # 浏览器半：window.__ModuleLoader__.load(...) CJS 包
 ```
@@ -165,73 +199,38 @@ CSS 通过 `<style data-plugin>` 注入，配色用 DSW 主题 token
 
 ## 安装
 
-> `dsh plugin` 是 pnpm 的薄转发层：在你的 profile 目录
-> （`$DSH_HOME/profiles/web`）里执行 `pnpm add <spec>`，并在包声明
-> `dsh.bundle` 时自动追加进 `dsh.profile.bundles`——主机半与浏览器半一次接好。
-
-### 从 npm（已发布）
-
 ```sh
-dsh plugin --profile web add dsh-status-light
-```
-
-可锁定版本（`dsh-status-light@0.5.1`），或指定私有 registry
-（`add --registry <url> dsh-status-light`）。升级：
-`dsh plugin --profile web update dsh-status-light`。
-
-### 从 git
-
-```sh
-dsh plugin --profile web add github:<owner>/dsh-session-status          # 默认分支
-dsh plugin --profile web add github:<owner>/dsh-session-status#v0.5.1   # 锁 tag
-```
-
-> 若仓库将来加入构建用的 `prepare` 脚本，pnpm 默认拦截依赖的安装脚本——
-> `dsh plugin` 会打印需要加入 profile `pnpm-workspace.yaml` 的 `allowBuilds`
-> key，加上后重跑即可。（npm 发布的包是预构建的，无构建步骤，不会触发。）
-
-### 从本地 checkout（开发）
-
-```sh
+# 在插件目录外（插件以 link 方式接入 profile 的 node_modules）：
 dsh plugin --profile web add /path/to/dsh-session-status
 ```
 
-插件以 `link:` 方式接入 profile 的 `node_modules`；改动仓库后在下次
-`dsh web` 启动时生效（HMR 只热替换已知的浏览器 bundle，见下节「激活」）。
+该命令会通过 pnpm 把插件装进 profile 的 `node_modules`，并自动把
+`dsh-session-status` 追加进 `dsh.profile.bundles`（主机半与浏览器半一次接好）。
 
-## 激活（重要）
+## 激活（实时生效——已在 DSH 0.2.0-rc.2 实测）
 
-新增的 bundle 只在 **`dsh web` 启动时**被客户端模块扫描器发现（`dsh-client-hmr`
-的 `rebuilt` 帧只热替换已存在的条目，`graph` 帧是 no-op，`patchReload: live` 也只
-监听两个 `cordis.patch.yml` 文件）。因此安装后必须**重启 web 进程**才会出现指示灯：
+**首次安装无需重启。** `patchReload: live` 下，运行中的 web 服务会监视 profile
+清单（`package.json`）：`dsh.profile.bundles` 列表变化触发 Loader 条目树实时调和，
+宿主半（桥路由 + 页面策略）被激活、client 图被重新扫描——侧栏灯、标签页 favicon
+与 `/session-status` 端点会在安装后数秒内出现在**已在运行**的实例中。
 
-```sh
-dsh --profile web        # 或 dsh web
-```
+仍需 **`dsh web` 重启**（`dsh --profile web`）的情形：
+
+- **升级**已列 bundle 到新版本（bundle 列表未变，清单监视器保持静默）；
+- **宿主侧代码改动**作用于已激活条目——宿主模块被 ESM loader 缓存（HMR 模块根
+  监视是可选项，出厂 web profile 未开启）。
+
+客户端 bundle 的改动则不同：`client-hmr` 宿主传输对图中每个 client bundle 做
+~500ms 的 stat 轮询，变化时重建 combo 并经 `/plugins/events` 推送 `graph` 帧，
+浏览器半会在**已打开的页面**内热替换。
 
 > 注意：重启会结束当前正在该 web 进程内运行的会话。
-
-## 发布
-
-插件零依赖且为预构建（浏览器 bundle 是手写的），发布就是普通的 npm 发布：
-
-```sh
-cd dsh-session-status
-npm publish --access public        # 首次发布：认领包名
-npm version patch && npm publish   # 后续发版
-```
-
-`files` 字段限定 tarball 内容只有 `lib/`、`cordis.patch.yml` 和两份 README。
-包名为 `dsh-status-light`，因为 npm 上的 `dsh-session-status` 已被一个
-不相关的项目占用。
 
 ## 卸载
 
 ```sh
-dsh plugin --profile web remove dsh-status-light
+dsh plugin --profile web remove dsh-session-status
 ```
-
-卸载按已安装状态对账，条目会自动从 `dsh.profile.bundles` 移除。
 
 ## 已知限制
 

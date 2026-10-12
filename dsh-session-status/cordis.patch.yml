@@ -1,18 +1,16 @@
-# Baseline layer contributed by the dsh-status-light bundle.
+# Baseline layer contributed by the dsh-session-status bundle.
 #
-# Adds one host Loader row. The host half (1) registers the `session-status`
-# settings namespace (the tab-icon mode + the desktop-bridge toggle, both
-# persisted in settings.yaml) and (2) mounts the read-only desktop status
-# bridge on the running web server: GET /session-status (snapshot) and
-# GET /session-status/stream (SSE), driven by the live `agents` registry and
-# the in-flight human-request waterfalls. The package's `dsh.client`
-# declaration is what makes the client-modules scanner publish its browser
-# half under /plugins and boot it in the GUI.
-#
-# The package name is `dsh-status-light` because the npm name
-# `dsh-session-status` is already taken by an unrelated project; the loader
-# row id and the settings namespace stay `session-status` (the id is
-# arbitrary — the row must simply be unique within the composed tree).
+# Adds one host Loader row. The row's entry id (`session-status`) is also
+# the settings namespace id (0.2.0: forms are projected automatically from
+# the plugin's Config schema). The host half (1) owns the `session-status`
+# entry config (tab-icon mode + desktop-bridge toggle, persisted in the
+# profile settings document, both fields volatile) and (2) mounts the
+# read-only desktop status bridge on the running web server:
+# GET /session-status (snapshot) and GET /session-status/stream (SSE),
+# driven by the live `agents` registry and the in-flight human-request
+# waterfalls. The package's `dsh.client` declaration is what makes the
+# client-modules scanner publish its browser half under /plugins and boot it
+# in the GUI.
 - insert:
     - id: session-status
-      name: dsh-status-light
+      name: dsh-session-status

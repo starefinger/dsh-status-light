@@ -41,10 +41,13 @@
 
 ### DSH 版本兼容性
 
-> ⚠️ **已知问题（v0.5.1）：在 DSH 0.2.0 上无法工作。** DSH **0.2.0** 下插件
-> 加载失败，并可能**导致 web GUI 无法启动**；DSH **0.1.5** 下运行正常。
-> 在发布兼容版本之前，请继续使用 0.1.5，或先移除插件
-> （`dsh plugin --profile web remove dsh-status-light`）再重启。
+| 插件版本 | DSH 版本 | 说明 |
+| --- | --- | --- |
+| **v0.6.0**（当前） | **0.2.0** | 跟进 0.2.0 设置体系重构（Config 自动投影表单、`configForms`、统一 `uiSession.sessionStatus`）；volatile 设置热切换 |
+| v0.5.x | 0.1.5 | 旧的 `settings.register` 命名空间模型；**在 0.2.0 上无法工作**（插件加载失败，并可能导致 web GUI 无法启动） |
+
+插件大版本需与 DSH 大版本匹配：DSH 0.2.0 用 v0.6.0；DSH 0.1.5 请用 v0.5.x
+（或用 `dsh plugin --profile web remove dsh-session-status` 移除插件后重启）。
 
 ## 快速开始
 
@@ -52,11 +55,13 @@
 
 ```sh
 # 从 npm（已发布）：
-dsh plugin --profile web add dsh-status-light
+dsh plugin --profile web add dsh-session-status
 # 或从本地 checkout（开发）：
 dsh plugin --profile web add /path/to/dsh-session-status
-dsh --profile web           # 重启后生效
 ```
+
+首次安装会在**已运行**的 web 实例中实时生效（条目树实时调和，数秒后出现）；
+需要重启 `dsh web` 的情形见插件 README 的「激活」一节。
 
 ### 2. 桌面药丸 + 托盘（Python 小工具）
 
@@ -86,7 +91,7 @@ python status_tray.py                # 默认就是「药丸 + 托盘」
 ## 目录结构
 
 ```
-dsh-session-status/     浏览器插件（npm 包名：dsh-status-light）：侧栏状态灯 + 标签页图标 + 设置页 + 状态桥
+dsh-session-status/     浏览器插件（npm 包名：dsh-session-status）：侧栏状态灯 + 标签页图标 + 设置页 + 状态桥
 desktop/                桌面伴侣的统一目录（可放多个实现版本）
   desktop-python/       Python 版：置顶药丸 + 系统托盘（当前唯一版本）
 test-*.mjs / .cjs       插件的测试
